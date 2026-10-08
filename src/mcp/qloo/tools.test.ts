@@ -106,6 +106,27 @@ describe("compare_taste", () => {
     expect(r.blend.outing?.food.domain).toBe("food");
   });
 
+  it("keeps the demo click-path fixture ids and returns both friend picks", async () => {
+    const viewer = loggedProfile([
+      "qloo:music:radiohead",
+      "qloo:film:her",
+      "qloo:places:los-feliz-cinema",
+    ]);
+    const next = await recommend(mock, { profile: viewer, limit: 4 });
+    expect(next.fixtureId).toBe("qloo-fixture-oct30-v1/recommend/c5aa6291");
+    const r = await compareTaste(mock, {
+      viewer,
+      people,
+      blendWithPersonId: "person:jordan",
+      blendLimit: 3,
+    });
+    expect(r.fixtureId).toBe("qloo-fixture-oct30-v1/compare_taste/c0b55f07");
+    expect(r.picks.tasteTwin?.personId).toBe("person:maya");
+    expect(r.picks.outingBlend?.personId).toBe("person:jordan");
+    expect(r.blend.outing?.place.id).toBe("qloo:places:amoeba-hollywood");
+    expect(r.blend.outing?.food.id).toBe("qloo:food:jon-vincent");
+  });
+
   it("gives a different fixture id per blend partner", async () => {
     const viewer = loggedProfile(["qloo:music:radiohead"]);
     const maya = await compareTaste(mock, { viewer, people });
