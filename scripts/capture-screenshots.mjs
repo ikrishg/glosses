@@ -63,7 +63,15 @@ await page.getByRole("button", { name: /Jordan \(friend\)/ }).click();
 await blendDone;
 await page.getByText("With Jordan (friend)").waitFor();
 await page.waitForTimeout(150);
-await section("Friends & discovery").scrollIntoViewIfNeeded();
+const friends = section("Friends & discovery");
+await friends.getByTestId("pick-taste-twin").waitFor();
+await friends.getByTestId("pick-outing-blend").waitFor();
+await friends.scrollIntoViewIfNeeded();
+await friends.screenshot({ path: `${outDir}/ac-g3-0-friend-picks.png` });
+const friendPicks = {
+  tasteTwin: await friends.getByTestId("pick-taste-twin").innerText(),
+  outingBlend: await friends.getByTestId("pick-outing-blend").innerText(),
+};
 await page.screenshot({ path: `${outDir}/ac-g3-1-pick-jordan.png` });
 await section("Suggested shared outing").scrollIntoViewIfNeeded();
 await page.screenshot({ path: `${outDir}/ac-g3-2-blend-and-outing.png` });
@@ -86,6 +94,7 @@ const proof = {
     fixtureId: compare.fixtureId,
     graphVersion: compare.graphVersion,
     blendWith: compare.blend.withPersonId,
+    friendPicksOnScreen: friendPicks,
     blendPicks: compare.blend.recommendations.map((r) => r.entity.id),
     outing: compare.blend.outing && {
       place: compare.blend.outing.place.id,
