@@ -1,9 +1,14 @@
 import { GlossesDemo } from "@/components/GlossesDemo";
+import { buildTasteQuiz } from "@/lib/demo/quiz-catalog";
+import { loadAppGraph } from "@/lib/qloo/app-graph";
 
-export default function Home() {
+export default async function Home() {
+  const { mode, graph } = await loadAppGraph();
+  const quiz = buildTasteQuiz(graph);
+
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
-      <GlossesDemo />
+      <GlossesDemo mode={mode} graph={graph} quiz={quiz} />
     </div>
   );
 }

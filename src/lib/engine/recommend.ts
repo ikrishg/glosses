@@ -4,9 +4,24 @@ import type {
   QlooGraphSnapshot,
   UserTasteProfile,
 } from "@/lib/qloo/types";
-import { entityById } from "@/lib/graph/fixture-graph";
+import { buildEntityIndex, entityInGraph } from "@/lib/graph/lookup";
 
 const DOMAIN_DIVERSITY_BONUS = 0.12;
+
+export type RecommendationEmptyReason = "no_tastes" | "no_paths";
+
+export function recommendationEmptyReason(
+  profile: UserTasteProfile,
+  graph: QlooGraphSnapshot,
+): RecommendationEmptyReason | null {
+  if (profile.tastes.length === 0) {
+    return "no_tastes";
+  }
+  if (recommendNextThing(profile, graph, 1).length === 0) {
+    return "no_paths";
+  }
+  return null;
+}
 
 /**
  * Cross-domain "next thing" from Qloo affinity graph traversal.
@@ -17,6 +32,7 @@ export function recommendNextThing(
   graph: QlooGraphSnapshot,
   limit = 3,
 ): CrossDomainRecommendation[] {
+  const index = buildEntityIndex(graph);
   const loggedIds = new Set(profile.tastes.map((t) => t.entityId));
   const tasteWeight = new Map(
     profile.tastes.map((t) => [t.entityId, t.weight]),
@@ -28,13 +44,13 @@ export function recommendNextThing(
   >();
 
   for (const taste of profile.tastes) {
-    const source = entityById(taste.entityId);
+    const source = entityInGraph(graph, taste.entityId, index);
     if (!source) continue;
 
     const outbound = graph.edges.filter((e) => e.fromId === taste.entityId);
     for (const edge of outbound) {
       if (loggedIds.has(edge.toId)) continue;
-      const target = entityById(edge.toId);
+      const target = entityInGraph(graph, edge.toId, index);
       if (!target) continue;
 
       const pathScore = (tasteWeight.get(taste.entityId) ?? 1) * edge.weight;
@@ -55,14 +71,14 @@ export function recommendNextThing(
     }
   }
 
-  // Graph-version tie-breaker (opaque to quiz-takers / LLMs without the fixture).
-  const versionSalt = graph.version.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+  const versionSalt = graph.version
+    .split("")
+    .reduce((a, c) => a + c.charCodeAt(0), 0);
 
   const ranked = [...scores.entries()]
     .map(([id, meta]) => {
-      const entity = entityById(id)!;
-      const tieBreak =
-        ((id.length * 17 + versionSalt) % 1000) / 100000;
+      const entity = entityInGraph(graph, id, index)!;
+      const tieBreak = ((id.length * 17 + versionSalt) % 1000) / 100000;
       return {
         entity,
         score: meta.score + tieBreak,

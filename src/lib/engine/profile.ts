@@ -1,4 +1,9 @@
-import type { TasteSignal, UserTasteProfile } from "@/lib/qloo/types";
+import type {
+  QlooGraphSnapshot,
+  TasteSignal,
+  UserTasteProfile,
+} from "@/lib/qloo/types";
+import { entityInGraph } from "@/lib/graph/lookup";
 import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
 
 export interface DomainWeights {
@@ -35,7 +40,10 @@ export function addTaste(
   };
 }
 
-export function domainWeights(profile: UserTasteProfile): DomainWeights {
+export function domainWeights(
+  profile: UserTasteProfile,
+  graph: QlooGraphSnapshot = FIXTURE_GRAPH,
+): DomainWeights {
   const weights: DomainWeights = {
     music: 0,
     film: 0,
@@ -45,7 +53,7 @@ export function domainWeights(profile: UserTasteProfile): DomainWeights {
     tv: 0,
   };
   for (const taste of profile.tastes) {
-    const entity = FIXTURE_GRAPH.entities.find((e) => e.id === taste.entityId);
+    const entity = entityInGraph(graph, taste.entityId);
     if (!entity) continue;
     weights[entity.domain] += taste.weight;
   }
@@ -67,20 +75,29 @@ export function tasteEntitySet(profile: UserTasteProfile): Set<string> {
 export function mergeTasteSignals(
   profiles: UserTasteProfile[],
 ): TasteSignal[] {
-  const byId = new Map<string, TasteSignal>();
+  const byId = new Map<
+    string,
+    { sum: number; count: number; loggedAt: number }
+  >();
   for (const profile of profiles) {
     for (const taste of profile.tastes) {
       const prev = byId.get(taste.entityId);
       if (!prev) {
-        byId.set(taste.entityId, { ...taste });
-      } else {
         byId.set(taste.entityId, {
-          entityId: taste.entityId,
-          weight: (prev.weight + taste.weight) / 2,
-          loggedAt: Math.max(prev.loggedAt, taste.loggedAt),
+          sum: taste.weight,
+          count: 1,
+          loggedAt: taste.loggedAt,
         });
+      } else {
+        prev.sum += taste.weight;
+        prev.count += 1;
+        prev.loggedAt = Math.max(prev.loggedAt, taste.loggedAt);
       }
     }
   }
-  return [...byId.values()];
+  return [...byId.entries()].map(([entityId, meta]) => ({
+    entityId,
+    weight: meta.sum / meta.count,
+    loggedAt: meta.loggedAt,
+  }));
 }

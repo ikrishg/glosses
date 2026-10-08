@@ -1,5 +1,5 @@
-import type { QlooDomain } from "@/lib/qloo/types";
-import { entitiesByDomain } from "@/lib/graph/fixture-graph";
+import type { QlooDomain, QlooGraphSnapshot } from "@/lib/qloo/types";
+import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
 
 export interface QuizPrompt {
   id: string;
@@ -9,8 +9,10 @@ export interface QuizPrompt {
   label: string;
 }
 
-/** Filmable taste quiz — picks map 1:1 to fixture entity IDs for the graph engine. */
-export function buildTasteQuiz(): QuizPrompt[] {
+/** Filmable taste quiz — picks map 1:1 to graph entity IDs for the engine. */
+export function buildTasteQuiz(
+  graph: QlooGraphSnapshot = FIXTURE_GRAPH,
+): QuizPrompt[] {
   const domains: QlooDomain[] = [
     "music",
     "film",
@@ -21,7 +23,7 @@ export function buildTasteQuiz(): QuizPrompt[] {
   ];
   const prompts: QuizPrompt[] = [];
   for (const domain of domains) {
-    const options = entitiesByDomain(domain);
+    const options = graph.entities.filter((e) => e.domain === domain);
     for (const entity of options.slice(0, 2)) {
       prompts.push({
         id: `quiz:${entity.id}`,

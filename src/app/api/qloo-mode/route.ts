@@ -1,10 +1,8 @@
-import { createQlooClient } from "@/lib/qloo/client";
+import { loadAppGraph } from "@/lib/qloo/app-graph";
 import { NextResponse } from "next/server";
 
 export async function GET() {
-  const mode = process.env.QLOO_API_KEY?.trim() ? "live" : "mock";
-  const client = createQlooClient();
-  const graph = await client.getGraph();
+  const { mode, graph } = await loadAppGraph();
   return NextResponse.json({
     mode,
     graphVersion: graph.version,

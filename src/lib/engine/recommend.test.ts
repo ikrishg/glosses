@@ -3,6 +3,26 @@ import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
 import { recommendNextThing } from "@/lib/engine/recommend";
 import { createEmptyDemoUser } from "@/lib/demo/seed";
 import { addTaste } from "@/lib/engine/profile";
+import type { QlooGraphSnapshot } from "@/lib/qloo/types";
+
+const ALT_GRAPH: QlooGraphSnapshot = {
+  version: "alt-graph-v1",
+  entities: [
+    {
+      id: "alt:seed",
+      name: "Alt Seed",
+      domain: "music",
+      tags: ["alt"],
+    },
+    {
+      id: "alt:target",
+      name: "Alt Target",
+      domain: "books",
+      tags: ["alt"],
+    },
+  ],
+  edges: [{ fromId: "alt:seed", toId: "alt:target", weight: 0.95 }],
+};
 
 describe("recommendNextThing", () => {
   it("returns cross-domain picks from graph edges, not logged entities", () => {
@@ -22,5 +42,14 @@ describe("recommendNextThing", () => {
     const a = recommendNextThing(profile, FIXTURE_GRAPH, 1)[0]?.entity.id;
     const b = recommendNextThing(profile, FIXTURE_GRAPH, 1)[0]?.entity.id;
     expect(a).toBe(b);
+  });
+
+  it("resolves entities from the supplied graph snapshot", () => {
+    let profile = createEmptyDemoUser();
+    profile = addTaste(profile, "alt:seed");
+    const recs = recommendNextThing(profile, ALT_GRAPH, 3);
+    expect(recs).toHaveLength(1);
+    expect(recs[0].entity.id).toBe("alt:target");
+    expect(recs[0].entity.name).toBe("Alt Target");
   });
 });

@@ -1,9 +1,12 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { FIXTURE_GRAPH, entityById } from "@/lib/graph/fixture-graph";
+import { entityInGraph } from "@/lib/graph/lookup";
 import { addTaste, domainWeights } from "@/lib/engine/profile";
-import { recommendNextThing } from "@/lib/engine/recommend";
+import {
+  recommendationEmptyReason,
+  recommendNextThing,
+} from "@/lib/engine/recommend";
 import { rankPeopleByTaste } from "@/lib/engine/match";
 import { blendProfiles, blendedAsProfile } from "@/lib/engine/blend";
 import { suggestSharedOuting } from "@/lib/engine/outing";
@@ -12,13 +15,18 @@ import {
   HOBBIT_TAGLINE,
   SEED_PEOPLE,
 } from "@/lib/demo/seed";
-import { buildTasteQuiz } from "@/lib/demo/quiz-catalog";
+import type { QuizPrompt } from "@/lib/demo/quiz-catalog";
 import { TasteProfileRadar } from "@/components/TasteProfileRadar";
-import type { UserTasteProfile } from "@/lib/qloo/types";
+import type { QlooDataMode } from "@/lib/qloo/app-graph";
+import type { QlooGraphSnapshot, UserTasteProfile } from "@/lib/qloo/types";
 
-const quiz = buildTasteQuiz();
+export interface GlossesDemoProps {
+  mode: QlooDataMode;
+  graph: QlooGraphSnapshot;
+  quiz: QuizPrompt[];
+}
 
-export function GlossesDemo() {
+export function GlossesDemo({ mode, graph, quiz }: GlossesDemoProps) {
   const [profile, setProfile] = useState<UserTasteProfile>(() =>
     createEmptyDemoUser(),
   );
@@ -30,14 +38,21 @@ export function GlossesDemo() {
     setProfile((p) => addTaste(p, entityId));
   }, []);
 
-  const weights = useMemo(() => domainWeights(profile), [profile]);
+  const weights = useMemo(
+    () => domainWeights(profile, graph),
+    [profile, graph],
+  );
   const recommendations = useMemo(
-    () => recommendNextThing(profile, FIXTURE_GRAPH, 4),
-    [profile],
+    () => recommendNextThing(profile, graph, 4),
+    [profile, graph],
+  );
+  const emptyReason = useMemo(
+    () => recommendationEmptyReason(profile, graph),
+    [profile, graph],
   );
   const ranked = useMemo(
-    () => rankPeopleByTaste(profile, SEED_PEOPLE),
-    [profile],
+    () => rankPeopleByTaste(profile, SEED_PEOPLE, graph),
+    [profile, graph],
   );
   const selected = SEED_PEOPLE.find((p) => p.personId === selectedFriendId)!;
   const blend = useMemo(
@@ -49,24 +64,35 @@ export function GlossesDemo() {
     [blend, selected],
   );
   const blendRecs = useMemo(
-    () => recommendNextThing(blendProfile, FIXTURE_GRAPH, 3),
-    [blendProfile],
+    () => recommendNextThing(blendProfile, graph, 3),
+    [blendProfile, graph],
   );
   const outing = useMemo(
-    () => suggestSharedOuting(profile, selected.profile, FIXTURE_GRAPH),
-    [profile, selected],
+    () => suggestSharedOuting(profile, selected.profile, graph),
+    [profile, selected, graph],
   );
 
   const loggedNames = profile.tastes
-    .map((t) => entityById(t.entityId)?.name)
+    .map((t) => entityInGraph(graph, t.entityId)?.name)
     .filter(Boolean);
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-10 px-4 py-10">
       <header className="space-y-2">
-        <p className="text-sm font-medium uppercase tracking-widest text-violet-600">
-          Glosses · Oct 30 demo
-        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm font-medium uppercase tracking-widest text-violet-600">
+            Glosses · Oct 30 demo
+          </p>
+          <span
+            className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+              mode === "live"
+                ? "bg-emerald-100 text-emerald-800"
+                : "bg-zinc-200 text-zinc-700"
+            }`}
+          >
+            Qloo {mode} · {graph.version}
+          </span>
+        </div>
         <h1 className="text-3xl font-semibold text-zinc-900">
           Taste graph → next thing → friends
         </h1>
@@ -101,7 +127,7 @@ export function GlossesDemo() {
         <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
           <h2 className="text-lg font-semibold">Your taste profile</h2>
           <p className="mt-1 text-sm text-zinc-500">
-            Shifts visibly as you log — domain weights from fixture graph.
+            Shifts visibly as you log — domain weights from the active graph.
           </p>
           <div className="mt-4">
             <TasteProfileRadar weights={weights} />
@@ -114,12 +140,14 @@ export function GlossesDemo() {
           Cross-domain next thing
         </h2>
         <p className="mt-1 text-sm text-violet-800/80">
-          From Qloo affinity traversal ({FIXTURE_GRAPH.version}) — not a chat
+          From Qloo affinity traversal ({graph.version}) — not a chat
           completion.
         </p>
         {recommendations.length === 0 ? (
           <p className="mt-4 text-sm text-zinc-600">
-            Log at least one taste to unlock recommendations.
+            {emptyReason === "no_tastes"
+              ? "Log at least one taste to unlock recommendations."
+              : "Your picks are logged, but they have no cross-domain paths yet — try a music or film taste to branch out."}
           </p>
         ) : (
           <ul className="mt-4 space-y-3">
@@ -190,12 +218,12 @@ export function GlossesDemo() {
           {outing ? (
             <div className="mt-4 space-y-2 text-sm">
               <p>
-                <span className="font-medium">{outing.place.name}</span> +{" "}
+                <span className="font-medium">{outing.place.name}</span> →{" "}
                 <span className="font-medium">{outing.food.name}</span>
                 {outing.activity && (
                   <>
                     {" "}
-                    · then{" "}
+                    →{" "}
                     <span className="font-medium">{outing.activity.name}</span>
                   </>
                 )}
@@ -204,7 +232,7 @@ export function GlossesDemo() {
             </div>
           ) : (
             <p className="mt-4 text-sm text-zinc-500">
-              Log taste to generate an outing plan.
+              Log taste to generate an outing plan on the graph.
             </p>
           )}
         </section>
