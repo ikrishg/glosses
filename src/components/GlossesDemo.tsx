@@ -10,11 +10,8 @@ import {
 import { rankPeopleByTaste } from "@/lib/engine/match";
 import { blendProfiles, blendedAsProfile } from "@/lib/engine/blend";
 import { suggestSharedOuting } from "@/lib/engine/outing";
-import {
-  createEmptyDemoUser,
-  HOBBIT_TAGLINE,
-  SEED_PEOPLE,
-} from "@/lib/demo/seed";
+import { createEmptyDemoUser, HOBBIT_TAGLINE } from "@/lib/demo/seed";
+import type { RankablePerson } from "@/lib/engine/match";
 import type { QuizPrompt } from "@/lib/demo/quiz-catalog";
 import { TasteProfileRadar } from "@/components/TasteProfileRadar";
 import type { QlooDataMode } from "@/lib/qloo/app-graph";
@@ -24,14 +21,20 @@ export interface GlossesDemoProps {
   mode: QlooDataMode;
   graph: QlooGraphSnapshot;
   quiz: QuizPrompt[];
+  seedPeople: RankablePerson[];
 }
 
-export function GlossesDemo({ mode, graph, quiz }: GlossesDemoProps) {
+export function GlossesDemo({
+  mode,
+  graph,
+  quiz,
+  seedPeople,
+}: GlossesDemoProps) {
   const [profile, setProfile] = useState<UserTasteProfile>(() =>
     createEmptyDemoUser(),
   );
   const [selectedFriendId, setSelectedFriendId] = useState(
-    SEED_PEOPLE[0].personId,
+    seedPeople[0]?.personId ?? "",
   );
 
   const logTaste = useCallback((entityId: string) => {
@@ -51,10 +54,11 @@ export function GlossesDemo({ mode, graph, quiz }: GlossesDemoProps) {
     [profile, graph],
   );
   const ranked = useMemo(
-    () => rankPeopleByTaste(profile, SEED_PEOPLE, graph),
-    [profile, graph],
+    () => rankPeopleByTaste(profile, seedPeople, graph),
+    [profile, graph, seedPeople],
   );
-  const selected = SEED_PEOPLE.find((p) => p.personId === selectedFriendId)!;
+  const selected =
+    seedPeople.find((p) => p.personId === selectedFriendId) ?? seedPeople[0]!;
   const blend = useMemo(
     () => blendProfiles([profile, selected.profile]),
     [profile, selected],

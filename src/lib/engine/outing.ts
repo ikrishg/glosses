@@ -4,7 +4,7 @@ import type {
   SharedOutingSuggestion,
   UserTasteProfile,
 } from "@/lib/qloo/types";
-import { entityInGraph, hasGraphEdge, neighbors } from "@/lib/graph/lookup";
+import { hasGraphEdge, neighbors } from "@/lib/graph/lookup";
 import { recommendNextThing } from "@/lib/engine/recommend";
 import { blendProfiles, blendedAsProfile } from "@/lib/engine/blend";
 
@@ -18,17 +18,44 @@ function bestLinkedFood(
   return foodNeighbor?.entity ?? null;
 }
 
-function bestLinkedActivity(
-  anchor: QlooEntity,
+function bestLinkedActivityFromFood(
+  food: QlooEntity,
   graph: QlooGraphSnapshot,
   exclude: Set<string>,
 ): QlooEntity | undefined {
-  const activity = neighbors(graph, anchor.id).find(
+  const candidate = neighbors(graph, food.id).find(
     (n) =>
       (n.entity.domain === "film" || n.entity.domain === "music") &&
       !exclude.has(n.entity.id),
   );
-  return activity?.entity;
+  if (!candidate) {
+    return undefined;
+  }
+  return hasGraphEdge(graph, food.id, candidate.entity.id)
+    ? candidate.entity
+    : undefined;
+}
+
+function orderedPlaceCandidates(
+  picks: ReturnType<typeof recommendNextThing>,
+  graph: QlooGraphSnapshot,
+  logged: Set<string>,
+): QlooEntity[] {
+  const places: QlooEntity[] = [];
+  const seen = new Set<string>();
+  for (const pick of picks) {
+    if (pick.entity.domain !== "places" || seen.has(pick.entity.id)) continue;
+    seen.add(pick.entity.id);
+    places.push(pick.entity);
+  }
+  for (const entity of graph.entities) {
+    if (entity.domain !== "places" || logged.has(entity.id) || seen.has(entity.id)) {
+      continue;
+    }
+    seen.add(entity.id);
+    places.push(entity);
+  }
+  return places;
 }
 
 /**
@@ -43,49 +70,51 @@ export function suggestSharedOuting(
   const picks = recommendNextThing(blended, graph, 24);
   const logged = new Set(blended.tastes.map((t) => t.entityId));
 
-  let placePick = picks.find((p) => p.entity.domain === "places");
-  if (!placePick) {
-    const fallback = graph.entities.find(
-      (e) => e.domain === "places" && !logged.has(e.id),
-    );
-    if (!fallback) return null;
-    placePick = {
-      entity: fallback,
-      score: 0.5,
-      sourceDomains: [],
-      rationale: "Fallback place from graph catalog.",
+  for (const place of orderedPlaceCandidates(picks, graph, logged)) {
+    const food = bestLinkedFood(place, graph);
+    if (!food) {
+      continue;
+    }
+
+    const exclude = new Set([place.id, food.id, ...logged]);
+    const activity = bestLinkedActivityFromFood(food, graph, exclude);
+
+    const edgeBoost = hasGraphEdge(graph, place.id, food.id) ? 0.2 : 0;
+    const pickScore =
+      picks.find((p) => p.entity.id === place.id)?.score ?? 0.5;
+
+    return {
+      place,
+      food,
+      activity,
+      score: pickScore + edgeBoost,
+      rationale: activity
+        ? `Route on the taste graph: ${place.name} → ${food.name} → ${activity.name}.`
+        : `Route on the taste graph: ${place.name} → ${food.name}.`,
     };
   }
 
-  const food = bestLinkedFood(placePick.entity, graph);
-  if (!food) {
-    return null;
-  }
-
-  const exclude = new Set([placePick.entity.id, food.id, ...logged]);
-  const activity =
-    bestLinkedActivity(placePick.entity, graph, exclude) ??
-    bestLinkedActivity(food, graph, exclude);
-
-  const edgeBoost = hasGraphEdge(graph, placePick.entity.id, food.id)
-    ? 0.2
-    : 0;
-
-  return {
-    place: placePick.entity,
-    food,
-    activity,
-    score: placePick.score + edgeBoost,
-    rationale: `Route on the taste graph: ${placePick.entity.name} → ${food.name}${
-      activity ? ` → ${activity.name}` : ""
-    }.`,
-  };
+  return null;
 }
 
-/** @internal Test helper: ensures place and food are graph neighbors. */
+/** Ensures place↔food and optional food→activity edges exist on the graph. */
+export function outingRouteIsValid(
+  outing: SharedOutingSuggestion,
+  graph: QlooGraphSnapshot,
+): boolean {
+  if (!hasGraphEdge(graph, outing.place.id, outing.food.id)) {
+    return false;
+  }
+  if (outing.activity) {
+    return hasGraphEdge(graph, outing.food.id, outing.activity.id);
+  }
+  return true;
+}
+
+/** @deprecated Use outingRouteIsValid */
 export function outingUsesCoherentRoute(
   outing: SharedOutingSuggestion,
   graph: QlooGraphSnapshot,
 ): boolean {
-  return hasGraphEdge(graph, outing.place.id, outing.food.id);
+  return outingRouteIsValid(outing, graph);
 }
