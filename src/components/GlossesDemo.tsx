@@ -217,6 +217,36 @@ export function GlossesDemo({
             <span data-testid="compare-fixture-id"> Fixture {comparison.fixtureId}</span>
           )}
         </p>
+        {(comparison?.picks.tasteTwin || comparison?.picks.outingBlend) && (
+          <ul className="mt-4 grid gap-3 text-sm lg:grid-cols-2">
+            {comparison.picks.tasteTwin && (
+              <li
+                data-testid="pick-taste-twin"
+                className="rounded-lg bg-zinc-50 px-3 py-2"
+              >
+                <div className="font-medium">
+                  Taste twin: {comparison.picks.tasteTwin.displayName}
+                </div>
+                <p className="mt-1 text-zinc-600">
+                  {comparison.picks.tasteTwin.reason}
+                </p>
+              </li>
+            )}
+            {comparison.picks.outingBlend && (
+              <li
+                data-testid="pick-outing-blend"
+                className="rounded-lg bg-zinc-50 px-3 py-2"
+              >
+                <div className="font-medium">
+                  Best outing blend: {comparison.picks.outingBlend.displayName}
+                </div>
+                <p className="mt-1 text-zinc-600">
+                  {comparison.picks.outingBlend.reason}
+                </p>
+              </li>
+            )}
+          </ul>
+        )}
         <ul className="mt-4 divide-y divide-zinc-100">
           {ranked.map((person) => (
             <li key={person.personId} className="flex items-center gap-4 py-3">

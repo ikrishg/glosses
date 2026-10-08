@@ -5,6 +5,7 @@ import { recommendNextThing } from "@/lib/engine/recommend";
 import { rankPeopleByTaste, type RankablePerson } from "@/lib/engine/match";
 import { blendProfiles, blendedAsProfile } from "@/lib/engine/blend";
 import { suggestSharedOuting } from "@/lib/engine/outing";
+import { pickFriends } from "@/lib/engine/friend-picks";
 
 export const QLOO_TOOL_NAMES = [
   "search_entities",
@@ -92,6 +93,33 @@ export const compareTasteOutput = {
       sharedEntityIds: z.array(z.string()),
     }),
   ),
+  picks: z.object({
+    tasteTwin: z
+      .object({
+        personId: z.string(),
+        displayName: z.string(),
+        sharedEntityIds: z.array(z.string()),
+        sharedNextThingId: z.string().nullable(),
+        reason: z.string(),
+      })
+      .nullable(),
+    outingBlend: z
+      .object({
+        personId: z.string(),
+        displayName: z.string(),
+        placeId: z.string(),
+        foodId: z.string(),
+        contributions: z.array(
+          z.object({
+            stopId: z.string(),
+            owner: z.enum(["viewer", "person"]),
+            viaEntityId: z.string(),
+          }),
+        ),
+        reason: z.string(),
+      })
+      .nullable(),
+  }),
   blend: z.object({
     withPersonId: z.string(),
     recommendations: z.array(recommendationSchema),
@@ -241,6 +269,7 @@ export async function compareTaste(
       args.blendLimit,
     ]),
     matches: rankPeopleByTaste(viewer, people, graph),
+    picks: pickFriends(viewer, people, graph),
     blend: {
       withPersonId: partner.personId,
       recommendations: recommendNextThing(blendProfile, graph, args.blendLimit),
