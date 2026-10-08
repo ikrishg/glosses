@@ -6,7 +6,10 @@ import type {
 } from "@/lib/qloo/types";
 import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
 
+export type QlooClientMode = "mock" | "live";
+
 export interface QlooClient {
+  readonly mode: QlooClientMode;
   getGraph(): Promise<QlooGraphSnapshot>;
   searchEntities(domain: QlooDomain, query: string): Promise<QlooEntity[]>;
   logTaste(userId: string, entityId: string): Promise<void>;
@@ -20,6 +23,7 @@ const LIVE_BASE = "https://api.qloo.com";
  * until endpoints are wired; swap implementation bodies when key is available.
  */
 export class LiveQlooClient implements QlooClient {
+  readonly mode = "live" as const;
   private readonly apiKey: string;
 
   constructor(apiKey: string) {
@@ -62,6 +66,8 @@ export class LiveQlooClient implements QlooClient {
 
 /** Fixture-backed client used for Oct 30 demo without an API key. */
 export class MockQlooClient implements QlooClient {
+  readonly mode = "mock" as const;
+
   async getGraph(): Promise<QlooGraphSnapshot> {
     return FIXTURE_GRAPH;
   }
@@ -84,8 +90,10 @@ export class MockQlooClient implements QlooClient {
   }
 }
 
-export function createQlooClient(): QlooClient {
-  const key = process.env.QLOO_API_KEY?.trim();
+export function createQlooClient(
+  env: Record<string, string | undefined> = process.env,
+): QlooClient {
+  const key = env.QLOO_API_KEY?.trim();
   if (key) {
     return new LiveQlooClient(key);
   }
