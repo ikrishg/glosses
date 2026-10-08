@@ -1,21 +1,33 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { entityInGraph } from "@/lib/graph/lookup";
 import { addTaste, domainWeights } from "@/lib/engine/profile";
-import {
-  recommendationEmptyReason,
-  recommendNextThing,
-} from "@/lib/engine/recommend";
-import { rankPeopleByTaste } from "@/lib/engine/match";
-import { blendProfiles, blendedAsProfile } from "@/lib/engine/blend";
-import { suggestSharedOuting } from "@/lib/engine/outing";
+import { recommendationEmptyReason } from "@/lib/engine/recommend";
 import { createEmptyDemoUser, HOBBIT_TAGLINE } from "@/lib/demo/seed";
 import type { RankablePerson } from "@/lib/engine/match";
-import type { QuizPrompt } from "@/lib/demo/quiz-catalog";
+import {
+  buildTasteQuiz,
+  type QuizPrompt,
+} from "@/lib/demo/quiz-catalog";
 import { TasteProfileRadar } from "@/components/TasteProfileRadar";
 import type { QlooDataMode } from "@/lib/qloo/app-graph";
-import type { QlooGraphSnapshot, UserTasteProfile } from "@/lib/qloo/types";
+import { fetchQlooTool, useQlooTool } from "@/lib/qloo/use-qloo-tool";
+import type {
+  QlooDomain,
+  QlooEntity,
+  QlooGraphSnapshot,
+  UserTasteProfile,
+} from "@/lib/qloo/types";
+
+const CATALOG_DOMAINS: QlooDomain[] = [
+  "music",
+  "film",
+  "books",
+  "places",
+  "food",
+  "tv",
+];
 
 export interface GlossesDemoProps {
   mode: QlooDataMode;
@@ -27,7 +39,7 @@ export interface GlossesDemoProps {
 export function GlossesDemo({
   mode,
   graph,
-  quiz,
+  quiz: serverQuiz,
   seedPeople,
 }: GlossesDemoProps) {
   const [profile, setProfile] = useState<UserTasteProfile>(() =>
@@ -35,6 +47,30 @@ export function GlossesDemo({
   );
   const [selectedFriendId, setSelectedFriendId] = useState(
     seedPeople[0]?.personId ?? "",
+  );
+
+  const [catalog, setCatalog] = useState<QlooEntity[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      CATALOG_DOMAINS.map((domain) =>
+        fetchQlooTool("search_entities", { domain, query: "" }),
+      ),
+    )
+      .then((results) => {
+        if (!cancelled) setCatalog(results.flatMap((r) => r.entities));
+      })
+      .catch((err) => console.error(err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const quiz = useMemo(
+    () =>
+      catalog ? buildTasteQuiz({ ...graph, entities: catalog }) : serverQuiz,
+    [catalog, graph, serverQuiz],
   );
 
   const logTaste = useCallback((entityId: string) => {
@@ -45,36 +81,33 @@ export function GlossesDemo({
     () => domainWeights(profile, graph),
     [profile, graph],
   );
-  const recommendations = useMemo(
-    () => recommendNextThing(profile, graph, 4),
-    [profile, graph],
-  );
+  const next = useQlooTool("recommend", { profile, limit: 4 });
+  const recommendations = next?.recommendations ?? [];
   const emptyReason = useMemo(
     () => recommendationEmptyReason(profile, graph),
     [profile, graph],
   );
-  const ranked = useMemo(
-    () => rankPeopleByTaste(profile, seedPeople, graph),
-    [profile, graph, seedPeople],
+  const peopleArgs = useMemo(
+    () =>
+      seedPeople.map((p) => ({
+        personId: p.personId,
+        displayName: p.displayName,
+        tier: p.tier,
+        tastes: p.profile.tastes,
+      })),
+    [seedPeople],
   );
+  const comparison = useQlooTool("compare_taste", {
+    viewer: profile,
+    people: peopleArgs,
+    blendWithPersonId: selectedFriendId,
+    blendLimit: 3,
+  });
+  const ranked = comparison?.matches ?? [];
   const selected =
     seedPeople.find((p) => p.personId === selectedFriendId) ?? seedPeople[0]!;
-  const blend = useMemo(
-    () => blendProfiles([profile, selected.profile]),
-    [profile, selected],
-  );
-  const blendProfile = useMemo(
-    () => blendedAsProfile(blend, `You + ${selected.displayName}`),
-    [blend, selected],
-  );
-  const blendRecs = useMemo(
-    () => recommendNextThing(blendProfile, graph, 3),
-    [blendProfile, graph],
-  );
-  const outing = useMemo(
-    () => suggestSharedOuting(profile, selected.profile, graph),
-    [profile, selected, graph],
-  );
+  const blendRecs = comparison?.blend.recommendations ?? [];
+  const outing = comparison?.blend.outing ?? null;
 
   const loggedNames = profile.tastes
     .map((t) => entityInGraph(graph, t.entityId)?.name)
@@ -146,6 +179,9 @@ export function GlossesDemo({
         <p className="mt-1 text-sm text-violet-800/80">
           From Qloo affinity traversal ({graph.version}) — not a chat
           completion.
+          {next?.fixtureId && (
+            <span data-testid="recommend-fixture-id"> Fixture {next.fixtureId}</span>
+          )}
         </p>
         {recommendations.length === 0 ? (
           <p className="mt-4 text-sm text-zinc-600">
@@ -177,6 +213,9 @@ export function GlossesDemo({
         <h2 className="text-lg font-semibold">Friends & discovery</h2>
         <p className="mt-1 text-sm text-zinc-500">
           Ranked: friends → second in network → strangers.
+          {comparison?.fixtureId && (
+            <span data-testid="compare-fixture-id"> Fixture {comparison.fixtureId}</span>
+          )}
         </p>
         <ul className="mt-4 divide-y divide-zinc-100">
           {ranked.map((person) => (

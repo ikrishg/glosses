@@ -54,6 +54,44 @@ The Qloo client lives behind a small interface in `src/lib/qloo/client.ts`:
 
 **Note:** `LiveQlooClient` is wired to the expected Qloo base URL and auth header pattern; when your key is issued, validate response shapes against Qloo’s docs and adjust parsing if needed. Taste persistence for the demo remains in the browser session; production would persist via your backend.
 
+## Qloo MCP server (`src/mcp/qloo/`)
+
+A thin [MCP](https://modelcontextprotocol.io) wrapper over the same `QlooClient` seam and engines. Three read-only tools:
+
+| Tool | Input | Returns |
+|------|-------|---------|
+| `search_entities` | `domain`, `query?`, `limit?` | Qloo entities in one domain |
+| `recommend` | `profile` (tastes), `limit?` | Cross-domain “next thing” picks |
+| `compare_taste` | `viewer`, `people[]`, `blendWithPersonId?`, `blendLimit?` | Ranked taste matches + blend picks + shared outing |
+
+Every response carries `source` (`fixture` or `live`), `graphVersion`, and `fixtureId`. In fixture mode the id is stable for the same graph version, tool, and input (e.g. `qloo-fixture-oct30-v1/recommend/7d41e88a`); in live mode it is `null`.
+
+**Fixture/live switch:** same as the app — `QLOO_API_KEY` unset or blank serves fixtures; set routes through `LiveQlooClient`. Tests stub `fetch` and never call Qloo.
+
+The app’s taste log (`search_entities`), next thing (`recommend`), and friends/blend/outing (`compare_taste`) call these tools via `POST /api/qloo-mcp`, which talks to the server over an in-memory MCP transport.
+
+### Run locally over stdio
+
+```bash
+npm run mcp:qloo
+```
+
+To register it with an MCP client (Cursor, Claude Desktop, etc.):
+
+```json
+{
+  "mcpServers": {
+    "glosses-qloo": {
+      "command": "npm",
+      "args": ["run", "--silent", "mcp:qloo"],
+      "cwd": "/path/to/glosses"
+    }
+  }
+}
+```
+
+Add `"env": { "QLOO_API_KEY": "..." }` only once the key is issued; leave it out to stay on fixtures.
+
 ## What’s in / out (signed Oct 30)
 
 **In:** taste logging, cross-domain recommendations, friend match + blend + outing, profile shift, hobbit-style social discovery ranking, seeded fake friends for filming.
@@ -65,6 +103,8 @@ The Qloo client lives behind a small interface in `src/lib/qloo/client.ts`:
 - `src/lib/graph/fixture-graph.ts` — cross-domain entities & edges
 - `src/lib/engine/*` — recommend, match, blend, outing (unit tested)
 - `src/lib/qloo/client.ts` — mock vs live adapter
+- `src/mcp/qloo/` — Qloo MCP server (`tools.ts` handlers, `server.ts`, `stdio.ts` entry)
+- `src/app/api/qloo-mcp/route.ts` — app → MCP tool bridge
 - `src/components/GlossesDemo.tsx` — main UI flow
 
 ## Deploy (Vercel)
