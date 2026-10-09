@@ -1,5 +1,8 @@
 export const DEFAULT_QLOO_BASE_URL = "https://hackathon.api.qloo.com";
 
+const RETRY_429_BASE_MS = [500, 1000, 2000];
+const MAX_429_RETRIES = 3;
+
 export function getQlooBaseUrl(
   env: Record<string, string | undefined> = process.env,
 ): string {
@@ -24,6 +27,8 @@ export interface QlooFetchOptions {
   baseUrl?: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /** Test hook for 429 backoff delays. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 function redactSecrets(text: string, apiKey: string): string {
@@ -31,12 +36,16 @@ function redactSecrets(text: string, apiKey: string): string {
   return text.split(apiKey).join("[REDACTED]");
 }
 
-function shouldRetry(status: number): boolean {
-  return status === 429 || status >= 500;
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function jitterMs(base: number): number {
+  return base + Math.floor(Math.random() * 120);
 }
 
 /**
- * GET helper for Qloo hackathon API: `X-Api-Key`, timeout, one retry on 429/5xx.
+ * GET helper for Qloo hackathon API: `X-Api-Key`, timeout, exponential 429 backoff.
  * Errors mention status and path only — never headers or the key.
  */
 export async function qlooFetch(
@@ -54,8 +63,12 @@ export async function qlooFetch(
   const url = `${baseUrl}${path}${qs ? `?${qs}` : ""}`;
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 8000;
+  const sleep = options.sleep ?? defaultSleep;
 
-  const attempt = async (isRetry: boolean): Promise<unknown> => {
+  const attempt = async (
+    networkRetry: boolean,
+    rateLimitAttempt: number,
+  ): Promise<unknown> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -65,8 +78,15 @@ export async function qlooFetch(
         signal: controller.signal,
       });
       if (!res.ok) {
-        if (!isRetry && shouldRetry(res.status)) {
-          return attempt(true);
+        if (res.status === 429 && rateLimitAttempt < MAX_429_RETRIES) {
+          const delay = jitterMs(
+            RETRY_429_BASE_MS[rateLimitAttempt] ?? RETRY_429_BASE_MS.at(-1)!,
+          );
+          await sleep(delay);
+          return attempt(networkRetry, rateLimitAttempt + 1);
+        }
+        if (!networkRetry && res.status >= 500) {
+          return attempt(true, rateLimitAttempt);
         }
         throw new QlooHttpError(res.status, path);
       }
@@ -75,8 +95,8 @@ export async function qlooFetch(
       if (err instanceof QlooHttpError) {
         throw err;
       }
-      if (!isRetry) {
-        return attempt(true);
+      if (!networkRetry) {
+        return attempt(true, rateLimitAttempt);
       }
       const message =
         err instanceof Error && err.name === "AbortError"
@@ -88,5 +108,5 @@ export async function qlooFetch(
     }
   };
 
-  return attempt(false);
+  return attempt(false, 0);
 }

@@ -11,8 +11,8 @@ import {
   QLOO_SEARCH_TYPE_BY_DOMAIN,
 } from "@/lib/qloo/domain-types";
 import {
-  getCachedLiveGraph,
   clearLiveGraphCache,
+  getServingLiveGraph,
   warmLiveGraphCache,
 } from "@/lib/qloo/live-graph";
 import { qlooFetch, type QlooFetchOptions } from "@/lib/qloo/qloo-fetch";
@@ -21,7 +21,7 @@ export type QlooClientMode = "mock" | "live";
 
 export interface QlooClient {
   readonly mode: QlooClientMode;
-  /** True when live calls failed and fixture data is being served. */
+  /** True when live graph never became ready and search fell back. */
   readonly degraded: boolean;
   /** Whether the latest `searchEntities` call hit Qloo HTTP or fixtures. */
   readonly searchDataSource: "live" | "fixture";
@@ -80,7 +80,7 @@ function fixtureSearch(domain: QlooDomain, query: string): QlooEntity[] {
 export class LiveQlooClient implements QlooClient {
   readonly mode = "live" as const;
   searchDataSource: "live" | "fixture" = "fixture";
-  private _degraded = false;
+  private _searchDegraded = false;
   private readonly fetchOpts: QlooFetchOptions;
 
   constructor(apiKey: string, fetchImpl?: typeof fetch) {
@@ -92,25 +92,16 @@ export class LiveQlooClient implements QlooClient {
   }
 
   get degraded(): boolean {
-    return this._degraded;
-  }
-
-  private markDegraded(): QlooGraphSnapshot {
-    this._degraded = true;
-    return fixtureGraph();
+    return this._searchDegraded;
   }
 
   async getGraph(): Promise<QlooGraphSnapshot> {
-    try {
-      const graph = await getCachedLiveGraph(this.fetchOpts);
-      return graph;
-    } catch {
-      return this.markDegraded();
-    }
+    warmLiveGraphCache(this.fetchOpts);
+    return getServingLiveGraph();
   }
 
   async searchEntities(domain: QlooDomain, query: string): Promise<QlooEntity[]> {
-    if (this._degraded) {
+    if (this._searchDegraded) {
       this.searchDataSource = "fixture";
       return fixtureSearch(domain, query);
     }
@@ -128,7 +119,7 @@ export class LiveQlooClient implements QlooClient {
       this.searchDataSource = "live";
       return (data.results ?? []).map((row) => mapSearchRow(row, domain));
     } catch {
-      this._degraded = true;
+      this._searchDegraded = true;
       this.searchDataSource = "fixture";
       return fixtureSearch(domain, query);
     }

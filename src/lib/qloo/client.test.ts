@@ -14,53 +14,6 @@ function searchResponse(entityId: string, name: string, urn: string) {
   return { results: [{ entity_id: entityId, name, types: [urn], tags: [] }] };
 }
 
-function insightsResponse(entities: { entity_id: string; affinity: number }[]) {
-  return {
-    success: true,
-    results: {
-      entities: entities.map((e) => ({
-        entity_id: e.entity_id,
-        name: "x",
-        query: { affinity: e.affinity },
-      })),
-    },
-  };
-}
-
-function makeLiveFetchStub() {
-  const idByName = new Map<string, string>();
-  let nextId = 1;
-  return vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes("/search")) {
-      const parsed = new URL(url);
-      const name = parsed.searchParams.get("query") ?? "";
-      const types = parsed.searchParams.get("types") ?? "";
-      let entityId = idByName.get(name);
-      if (!entityId) {
-        entityId = `live-entity-${nextId++}`;
-        idByName.set(name, entityId);
-      }
-      return new Response(JSON.stringify(searchResponse(entityId, name, types)), {
-        status: 200,
-      });
-    }
-    if (url.includes("/v2/insights")) {
-      const parsed = new URL(url);
-      const fromId = parsed.searchParams.get("signal.interests.entities");
-      const filterType = parsed.searchParams.get("filter.type");
-      const targets: { entity_id: string; affinity: number }[] = [];
-      if (fromId && filterType === "urn:entity:movie") {
-        targets.push({ entity_id: "live-entity-2", affinity: 0.88 });
-      }
-      return new Response(JSON.stringify(insightsResponse(targets)), {
-        status: 200,
-      });
-    }
-    return new Response("not found", { status: 404 });
-  });
-}
-
 describe("createQlooClient", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -112,52 +65,35 @@ describe("LiveQlooClient", () => {
     expect(calls[0][0]).toContain("hackathon.api.qloo.com/search");
   });
 
-  it("builds a live snapshot with fixture id map and caches the second getGraph", async () => {
-    const fetchSpy = makeLiveFetchStub();
-    const client = new LiveQlooClient(SECRET, fetchSpy);
+  it("returns the same cached live graph on repeated getGraph when the background build is ready", async () => {
+    const { __testSetLiveGraphReady } = await import("@/lib/qloo/live-graph");
+    const liveGraph = {
+      version: "qloo-live-2026-10-09",
+      entities: FIXTURE_GRAPH.entities,
+      edges: FIXTURE_GRAPH.edges,
+      dataSource: "live" as const,
+      fixtureIdMap: { "qloo:music:radiohead": "live-entity-1" },
+    };
+    __testSetLiveGraphReady(liveGraph);
+    const client = new LiveQlooClient(SECRET, vi.fn());
     const first = await client.getGraph();
     const second = await client.getGraph();
     expect(first.dataSource).toBe("live");
-    expect(first.version).toMatch(/^qloo-live-\d{4}-\d{2}-\d{2}$/);
-    expect(first.fixtureIdMap?.["qloo:music:radiohead"]).toBeTruthy();
+    expect(first.fixtureIdMap?.["qloo:music:radiohead"]).toBe("live-entity-1");
     expect(second).toBe(first);
-    const searchCalls = fetchSpy.mock.calls.filter((c) =>
-      String(c[0]).includes("/search"),
-    );
-    expect(searchCalls.length).toBeGreaterThan(0);
-    expect(fetchSpy.mock.calls.length).toBeGreaterThan(searchCalls.length);
   });
 
-  it("falls back to fixtures on 401", async () => {
-    const fetchSpy = vi.fn(async () => new Response("unauthorized", { status: 401 }));
+  it("serves fixtures on the request path while the graph warms", async () => {
+    const fetchSpy = vi.fn(
+      () => new Promise<Response>(() => {
+        /* never resolves during test */
+      }),
+    );
     const client = new LiveQlooClient(SECRET, fetchSpy);
     const graph = await client.getGraph();
-    expect(client.degraded).toBe(true);
+    expect(client.degraded).toBe(false);
     expect(graph.dataSource).toBe("fixture");
     expect(graph.version).toBe(FIXTURE_GRAPH.version);
-  });
-
-  it("falls back to fixtures on 500", async () => {
-    const fetchSpy = vi.fn(async () => new Response("error", { status: 500 }));
-    const client = new LiveQlooClient(SECRET, fetchSpy);
-    const graph = await client.getGraph();
-    expect(client.degraded).toBe(true);
-    expect(graph.entities).toEqual(FIXTURE_GRAPH.entities);
-  });
-
-  it("falls back to fixtures on timeout", async () => {
-    const fetchSpy = vi.fn(
-      () =>
-        new Promise<Response>((_resolve, reject) => {
-          const err = new Error("aborted");
-          err.name = "AbortError";
-          reject(err);
-        }),
-    );
-    const client = new LiveQlooClient(SECRET, fetchSpy);
-    const graph = await client.getGraph();
-    expect(client.degraded).toBe(true);
-    expect(graph.dataSource).toBe("fixture");
   });
 
 });
@@ -168,11 +104,14 @@ describe("loadAppGraph live-fallback", () => {
     clearLiveGraphCache();
   });
 
-  it("reports live-fallback when the live client degrades", async () => {
+  it("reports live-fallback when the live graph is degraded", async () => {
     vi.stubEnv("QLOO_API_KEY", SECRET);
+    clearLiveGraphCache();
+    const { __testSetLiveGraphStatus } = await import("@/lib/qloo/live-graph");
+    __testSetLiveGraphStatus("degraded");
     const client = {
       mode: "live" as const,
-      degraded: true,
+      degraded: false,
       searchDataSource: "fixture" as const,
       getGraph: async () => ({ ...FIXTURE_GRAPH, dataSource: "fixture" as const }),
       searchEntities: async () => [],
