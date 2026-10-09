@@ -1,45 +1,29 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { entityInGraph } from "@/lib/graph/lookup";
 import { addTaste, domainWeights } from "@/lib/engine/profile";
 import { recommendationEmptyReason } from "@/lib/engine/recommend";
 import { createEmptyDemoUser, HOBBIT_TAGLINE } from "@/lib/demo/seed";
 import type { RankablePerson } from "@/lib/engine/match";
-import {
-  buildTasteQuiz,
-  type QuizPrompt,
-} from "@/lib/demo/quiz-catalog";
+import { buildTasteQuiz } from "@/lib/demo/quiz-catalog";
 import { TasteProfileRadar } from "@/components/TasteProfileRadar";
 import type { QlooDataMode } from "@/lib/qloo/data-mode";
-import { fetchQlooTool, useQlooTool } from "@/lib/qloo/use-qloo-tool";
+import { useQlooTool } from "@/lib/qloo/use-qloo-tool";
 import type {
-  QlooDomain,
-  QlooEntity,
   QlooGraphSnapshot,
   UserTasteProfile,
 } from "@/lib/qloo/types";
 
-const CATALOG_DOMAINS: QlooDomain[] = [
-  "music",
-  "film",
-  "books",
-  "places",
-  "food",
-  "tv",
-];
-
 export interface GlossesDemoProps {
   mode: QlooDataMode;
   graph: QlooGraphSnapshot;
-  quiz: QuizPrompt[];
   seedPeople: RankablePerson[];
 }
 
 export function GlossesDemo({
   mode,
   graph,
-  quiz: serverQuiz,
   seedPeople,
 }: GlossesDemoProps) {
   const [profile, setProfile] = useState<UserTasteProfile>(() =>
@@ -49,28 +33,9 @@ export function GlossesDemo({
     seedPeople[0]?.personId ?? "",
   );
 
-  const [catalog, setCatalog] = useState<QlooEntity[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all(
-      CATALOG_DOMAINS.map((domain) =>
-        fetchQlooTool("search_entities", { domain, query: "" }),
-      ),
-    )
-      .then((results) => {
-        if (!cancelled) setCatalog(results.flatMap((r) => r.entities));
-      })
-      .catch((err) => console.error(err));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const quiz = useMemo(
-    () =>
-      catalog ? buildTasteQuiz({ ...graph, entities: catalog }) : serverQuiz,
-    [catalog, graph, serverQuiz],
+    () => buildTasteQuiz(graph),
+    [graph],
   );
 
   const logTaste = useCallback((entityId: string) => {

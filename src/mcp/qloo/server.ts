@@ -1,5 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createQlooClient, type QlooClient } from "@/lib/qloo/client";
+import {
+  createQlooClient,
+  type QlooClient,
+} from "@/lib/qloo/create-qloo-client";
 import {
   compareTaste,
   compareTasteInput,

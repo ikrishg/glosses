@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
+import { getMemoryLiveGraphStore } from "@/lib/qloo/live-graph-store";
 import {
   buildLiveGraphSnapshot,
   clearLiveGraphCache,
@@ -144,6 +145,56 @@ describe("buildLiveGraphSnapshot", () => {
   afterEach(() => {
     clearLiveGraphCache();
     vi.unstubAllGlobals();
+  });
+
+  it("retries fixture seeds that failed search on the next build pass", async () => {
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.includes("/search")) {
+        return new Response(
+          JSON.stringify({ success: true, results: { entities: [] } }),
+          { status: 200 },
+        );
+      }
+      const name = new URL(url).searchParams.get("query") ?? "";
+      if (name === "The Bell Jar") {
+        return new Response("missing", { status: 404 });
+      }
+      return new Response(JSON.stringify(okSearch(name, `id-${name}`)), {
+        status: 200,
+      });
+    });
+
+    await expect(
+      buildLiveGraphSnapshot(
+        { apiKey: SECRET, fetchImpl: fetchSpy },
+        undefined,
+        5_000,
+      ),
+    ).rejects.toThrow();
+
+    const bellJar = FIXTURE_GRAPH.entities.find(
+      (e) => e.name === "The Bell Jar",
+    )!;
+    const partial = getMemoryLiveGraphStore().partial;
+    expect(partial?.searchedFixtures.has(bellJar.id)).toBe(false);
+
+    const searchesBefore = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).includes("/search"),
+    ).length;
+
+    await expect(
+      buildLiveGraphSnapshot(
+        { apiKey: SECRET, fetchImpl: fetchSpy },
+        partial ?? undefined,
+        5_000,
+      ),
+    ).rejects.toThrow();
+
+    const searchesAfter = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).includes("/search"),
+    ).length;
+    expect(searchesAfter).toBeGreaterThan(searchesBefore);
   });
 
   it("skips failed searches without aborting the build", async () => {
