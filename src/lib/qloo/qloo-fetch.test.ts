@@ -45,6 +45,37 @@ describe("qlooFetch", () => {
     expect(init?.headers).toEqual({ "X-Api-Key": "secret-key-123" });
   });
 
+  it("backs off on 429 with jitter before retrying", async () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const fetchSpy = vi.fn(async () => {
+      calls += 1;
+      if (calls <= 2) {
+        return new Response("slow down", { status: 429 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const data = await qlooFetch(
+      "/search",
+      { query: "x" },
+      {
+        apiKey: "k",
+        fetchImpl: fetchSpy,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      },
+    );
+    expect(data).toEqual({ ok: true });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(sleeps.length).toBe(2);
+    expect(sleeps[0]).toBeGreaterThanOrEqual(500);
+    expect(sleeps[0]).toBeLessThan(700);
+    expect(sleeps[1]).toBeGreaterThanOrEqual(1000);
+  });
+
   it("retries once on 500", async () => {
     let calls = 0;
     const fetchSpy = vi.fn(async () => {

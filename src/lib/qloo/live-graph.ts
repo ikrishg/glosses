@@ -12,13 +12,14 @@ import {
 import { QlooHttpError, qlooFetch, type QlooFetchOptions } from "@/lib/qloo/qloo-fetch";
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-const NEGATIVE_CACHE_MS = 60 * 1000;
-const BUILD_BUDGET_MS = 15_000;
-const POOL_CONCURRENCY = 6;
+const RETRY_COOLDOWN_MS = 60 * 1000;
+const BUILD_BUDGET_MS = 60_000;
+export const POOL_CONCURRENCY = 3;
 const MIN_RESOLVED_ENTITIES = Math.max(
   3,
   Math.ceil(FIXTURE_GRAPH.entities.length * 0.2),
 );
+const MIN_LIVE_EDGES = FIXTURE_GRAPH.edges.length;
 
 const ALL_DOMAINS: QlooDomain[] = [
   "music",
@@ -42,19 +43,63 @@ type InsightsHit = {
   query?: { affinity?: number };
 };
 
-type InsightTask = {
-  seed: QlooEntity;
-  targetDomain: QlooDomain;
+export type LiveGraphBuildProgress = {
+  fixtureIdMap: Record<string, string>;
+  entities: QlooEntity[];
+  edges: QlooAffinityEdge[];
+  searchedFixtures: Set<string>;
+  insightsDomainsDone: Set<QlooDomain>;
 };
 
-let cache: { graph: QlooGraphSnapshot; expiresAt: number } | null = null;
-let inflight: Promise<QlooGraphSnapshot> | null = null;
-let negativeCacheUntil = 0;
+export type LiveGraphStatus = "idle" | "warming" | "ready" | "degraded";
+
+type LiveCache = {
+  graph: QlooGraphSnapshot;
+  expiresAt: number;
+};
+
+let readyCache: LiveCache | null = null;
+let inflight: Promise<void> | null = null;
+let retryAfter = 0;
+let partial: LiveGraphBuildProgress | null = null;
+let lastStatus: LiveGraphStatus = "idle";
+
+function emptyProgress(): LiveGraphBuildProgress {
+  return {
+    fixtureIdMap: {},
+    entities: [],
+    edges: [],
+    searchedFixtures: new Set(),
+    insightsDomainsDone: new Set(),
+  };
+}
+
+function cloneProgress(src: LiveGraphBuildProgress): LiveGraphBuildProgress {
+  return {
+    fixtureIdMap: { ...src.fixtureIdMap },
+    entities: [...src.entities],
+    edges: [...src.edges],
+    searchedFixtures: new Set(src.searchedFixtures),
+    insightsDomainsDone: new Set(src.insightsDomainsDone),
+  };
+}
 
 export function clearLiveGraphCache(): void {
-  cache = null;
+  readyCache = null;
   inflight = null;
-  negativeCacheUntil = 0;
+  retryAfter = 0;
+  partial = null;
+  lastStatus = "idle";
+}
+
+/** Test helper: mark a graph as the ready cached snapshot. */
+export function __testSetLiveGraphReady(graph: QlooGraphSnapshot): void {
+  readyCache = { graph, expiresAt: Date.now() + CACHE_TTL_MS };
+  lastStatus = "ready";
+}
+
+export function __testSetLiveGraphStatus(status: LiveGraphStatus): void {
+  lastStatus = status;
 }
 
 function liveGraphVersion(): string {
@@ -64,6 +109,26 @@ function liveGraphVersion(): string {
 
 function budgetExpired(deadline: number): boolean {
   return Date.now() >= deadline;
+}
+
+function fixtureGraph(): QlooGraphSnapshot {
+  return { ...FIXTURE_GRAPH, dataSource: "fixture" };
+}
+
+export function getLiveGraphStatus(): LiveGraphStatus {
+  return lastStatus;
+}
+
+export function isLiveGraphReady(): boolean {
+  return lastStatus === "ready" && readyCache !== null;
+}
+
+/** Graph served on the request path — never blocks on a background build. */
+export function getServingLiveGraph(): QlooGraphSnapshot {
+  if (readyCache) {
+    return readyCache.graph;
+  }
+  return fixtureGraph();
 }
 
 /** Run async work over items with a concurrency cap and time budget. */
@@ -96,172 +161,239 @@ async function searchEntityId(
   fixture: QlooEntity,
   fetchOpts: QlooFetchOptions,
 ): Promise<string | null> {
-  const types = QLOO_SEARCH_TYPE_BY_DOMAIN[fixture.domain];
-  const data = (await qlooFetch(
-    "/search",
-    { query: fixture.name, types, take: 1 },
-    fetchOpts,
-  )) as { results?: SearchHit[] };
-  const hit = data.results?.[0];
-  return hit?.entity_id ?? null;
+  try {
+    const types = QLOO_SEARCH_TYPE_BY_DOMAIN[fixture.domain];
+    const data = (await qlooFetch(
+      "/search",
+      { query: fixture.name, types, take: 1 },
+      fetchOpts,
+    )) as { results?: SearchHit[] };
+    const hit = data.results?.[0];
+    return hit?.entity_id ?? null;
+  } catch (err) {
+    if (err instanceof QlooHttpError) {
+      console.warn(
+        `[qloo] search ${err.status} for "${fixture.name}" — skipping seed`,
+      );
+    }
+    return null;
+  }
 }
 
-async function fetchInsights(
-  fromEntityId: string,
+async function fetchInsightsBatch(
+  seedEntityIds: string[],
   targetDomain: QlooDomain,
   fetchOpts: QlooFetchOptions,
 ): Promise<InsightsHit[]> {
+  if (seedEntityIds.length === 0) {
+    return [];
+  }
   const filterType = qlooInsightsFilterType(targetDomain);
   const data = (await qlooFetch(
     "/v2/insights",
     {
       "filter.type": filterType,
-      "signal.interests.entities": fromEntityId,
-      take: 24,
+      "signal.interests.entities": seedEntityIds.join(","),
+      take: 48,
     },
     fetchOpts,
   )) as { success?: boolean; results?: { entities?: InsightsHit[] } };
   return data.results?.entities ?? [];
 }
 
+function mergeEdges(
+  edges: QlooAffinityEdge[],
+  edgeKeys: Set<string>,
+  fromId: string,
+  toId: string,
+  weight: number,
+): void {
+  if (weight <= 0) return;
+  const key = `${fromId}->${toId}`;
+  if (edgeKeys.has(key)) return;
+  edgeKeys.add(key);
+  edges.push({ fromId, toId, weight });
+}
+
 export async function buildLiveGraphSnapshot(
   fetchOpts: QlooFetchOptions,
+  initialProgress?: LiveGraphBuildProgress,
 ): Promise<QlooGraphSnapshot> {
   const deadline = Date.now() + BUILD_BUDGET_MS;
-  const fixtureIdMap: Record<string, string> = {};
-  const entities: QlooEntity[] = [];
-  const liveIdToEntity = new Map<string, QlooEntity>();
-  const rejectedInsightSeeds = new Set<string>();
+  const state = initialProgress
+    ? cloneProgress(initialProgress)
+    : emptyProgress();
+  const liveIdToEntity = new Map(state.entities.map((e) => [e.id, e]));
+  const edgeKeys = new Set(
+    state.edges.map((e) => `${e.fromId}->${e.toId}`),
+  );
+
+  const fixturesToSearch = FIXTURE_GRAPH.entities.filter(
+    (f) => !state.searchedFixtures.has(f.id),
+  );
 
   const liveIds = await mapWithConcurrency(
-    FIXTURE_GRAPH.entities,
+    fixturesToSearch,
     POOL_CONCURRENCY,
     deadline,
     (fixture) => searchEntityId(fixture, fetchOpts),
   );
 
-  for (let i = 0; i < FIXTURE_GRAPH.entities.length; i++) {
-    const fixture = FIXTURE_GRAPH.entities[i];
+  for (let i = 0; i < fixturesToSearch.length; i++) {
+    const fixture = fixturesToSearch[i];
+    state.searchedFixtures.add(fixture.id);
     const liveId = liveIds[i];
     if (!liveId) continue;
-    fixtureIdMap[fixture.id] = liveId;
+    state.fixtureIdMap[fixture.id] = liveId;
+    if (liveIdToEntity.has(liveId)) continue;
     const entity: QlooEntity = {
       id: liveId,
       name: fixture.name,
       domain: fixture.domain,
       tags: fixture.tags,
     };
-    entities.push(entity);
+    state.entities.push(entity);
     liveIdToEntity.set(liveId, entity);
   }
 
-  if (entities.length < MIN_RESOLVED_ENTITIES) {
+  if (state.entities.length < MIN_RESOLVED_ENTITIES) {
     throw new Error(
-      `Live graph build failed: only ${entities.length}/${FIXTURE_GRAPH.entities.length} entities resolved`,
+      `Live graph build failed: only ${state.entities.length}/${FIXTURE_GRAPH.entities.length} entities resolved`,
     );
   }
 
-  const edges: QlooAffinityEdge[] = [];
-  const edgeKeys = new Set<string>();
-  const insightTasks: InsightTask[] = [];
-
-  for (const seed of entities) {
-    for (const targetDomain of ALL_DOMAINS) {
-      if (targetDomain === seed.domain) continue;
-      insightTasks.push({ seed, targetDomain });
-    }
-  }
+  const allSeedIds = state.entities.map((e) => e.id);
+  const insightDomains = ALL_DOMAINS.filter(
+    (d) => !state.insightsDomainsDone.has(d),
+  );
 
   await mapWithConcurrency(
-    insightTasks,
+    insightDomains,
     POOL_CONCURRENCY,
     deadline,
-    async ({ seed, targetDomain }) => {
-      if (rejectedInsightSeeds.has(seed.id)) {
+    async (targetDomain) => {
+      if (budgetExpired(deadline)) {
         return;
       }
-      let hits: InsightsHit[] = [];
       try {
-        hits = await fetchInsights(seed.id, targetDomain, fetchOpts);
-      } catch (err) {
-        if (err instanceof QlooHttpError && err.status === 400) {
-          rejectedInsightSeeds.add(seed.id);
-          console.warn(
-            `[qloo] skipping insights for rejected seed ${seed.name} (${seed.id})`,
-          );
-          return;
+        const hits = await fetchInsightsBatch(
+          allSeedIds,
+          targetDomain,
+          fetchOpts,
+        );
+        state.insightsDomainsDone.add(targetDomain);
+        for (const hit of hits) {
+          const target = liveIdToEntity.get(hit.entity_id);
+          if (!target || target.domain !== targetDomain) continue;
+          const weight = hit.query?.affinity ?? 0;
+          for (const seed of state.entities) {
+            if (seed.domain === targetDomain) continue;
+            mergeEdges(state.edges, edgeKeys, seed.id, target.id, weight);
+          }
         }
+      } catch (err) {
         if (err instanceof QlooHttpError) {
           console.warn(
-            `[qloo] insights ${err.status} for seed ${seed.id} → ${targetDomain}`,
+            `[qloo] batched insights ${err.status} for ${targetDomain}`,
           );
+          state.insightsDomainsDone.add(targetDomain);
           return;
         }
         throw err;
-      }
-      for (const hit of hits) {
-        const target = liveIdToEntity.get(hit.entity_id);
-        if (!target) continue;
-        const weight = hit.query?.affinity ?? 0;
-        if (weight <= 0) continue;
-        const key = `${seed.id}->${target.id}`;
-        if (edgeKeys.has(key)) continue;
-        edgeKeys.add(key);
-        edges.push({ fromId: seed.id, toId: target.id, weight });
       }
     },
   );
 
+  partial = cloneProgress(state);
+
+  if (state.edges.length < MIN_LIVE_EDGES) {
+    throw new Error(
+      `Live graph build incomplete: ${state.edges.length}/${MIN_LIVE_EDGES} edges`,
+    );
+  }
+
   return {
     version: liveGraphVersion(),
-    entities,
-    edges,
-    fixtureIdMap,
+    entities: state.entities,
+    edges: state.edges,
+    fixtureIdMap: state.fixtureIdMap,
     dataSource: "live",
   };
 }
 
-function startLiveGraphBuild(
-  fetchOpts: QlooFetchOptions,
-): Promise<QlooGraphSnapshot> {
-  if (Date.now() < negativeCacheUntil) {
-    return Promise.reject(new Error("Live graph build in cooldown"));
-  }
-  if (!inflight) {
-    inflight = buildLiveGraphSnapshot(fetchOpts)
-      .then((graph) => {
-        cache = { graph, expiresAt: Date.now() + CACHE_TTL_MS };
-        inflight = null;
-        negativeCacheUntil = 0;
-        return graph;
-      })
-      .catch((err) => {
-        inflight = null;
-        negativeCacheUntil = Date.now() + NEGATIVE_CACHE_MS;
-        throw err;
-      });
-  }
-  return inflight;
+function scheduleRetry(fetchOpts: QlooFetchOptions): void {
+  retryAfter = Date.now() + RETRY_COOLDOWN_MS;
+  lastStatus =
+    readyCache !== null ? "ready" : partial !== null ? "warming" : "degraded";
+  setTimeout(() => {
+    warmLiveGraphCache(fetchOpts);
+  }, RETRY_COOLDOWN_MS);
 }
 
-/** Fire-and-forget warm so the first user request is less likely to wait on a cold graph. */
+function runBackgroundBuild(fetchOpts: QlooFetchOptions): Promise<void> {
+  const stale = readyCache;
+  lastStatus = stale ? "ready" : "warming";
+
+  return buildLiveGraphSnapshot(fetchOpts, partial ?? undefined)
+    .then((graph) => {
+      readyCache = { graph, expiresAt: Date.now() + CACHE_TTL_MS };
+      partial = null;
+      retryAfter = 0;
+      lastStatus = "ready";
+    })
+    .catch((err) => {
+      console.warn(
+        `[qloo] background graph build: ${err instanceof Error ? err.message : "failed"}`,
+      );
+      if (readyCache) {
+        lastStatus = "ready";
+      } else {
+        lastStatus = partial ? "warming" : "degraded";
+      }
+      scheduleRetry(fetchOpts);
+    })
+    .finally(() => {
+      inflight = null;
+      const now = Date.now();
+      if (
+        readyCache &&
+        readyCache.expiresAt <= now &&
+        !inflight &&
+        now >= retryAfter
+      ) {
+        warmLiveGraphCache(fetchOpts);
+      }
+    });
+}
+
+/** Starts a background graph build; requests never await this. */
 export function warmLiveGraphCache(fetchOpts: QlooFetchOptions): void {
   const now = Date.now();
-  if (cache && cache.expiresAt > now) {
+  if (readyCache && readyCache.expiresAt > now) {
     return;
   }
-  if (inflight || now < negativeCacheUntil) {
+  if (inflight) {
     return;
   }
-  void startLiveGraphBuild(fetchOpts).catch(() => undefined);
+  if (now < retryAfter) {
+    return;
+  }
+  if (!readyCache) {
+    lastStatus = "warming";
+  }
+  inflight = runBackgroundBuild(fetchOpts);
 }
 
+/** @deprecated Requests should use getServingLiveGraph — kept for tests. */
 export async function getCachedLiveGraph(
   fetchOpts: QlooFetchOptions,
 ): Promise<QlooGraphSnapshot> {
-  const now = Date.now();
-  if (cache && cache.expiresAt > now) {
-    return cache.graph;
+  warmLiveGraphCache(fetchOpts);
+  if (inflight) {
+    await inflight;
   }
-  return startLiveGraphBuild(fetchOpts);
+  if (readyCache) {
+    return readyCache.graph;
+  }
+  throw new Error("Live graph not ready");
 }

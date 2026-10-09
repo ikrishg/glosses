@@ -3,6 +3,10 @@ import type { QlooGraphSnapshot } from "@/lib/qloo/types";
 import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
 import { getQlooDataMode, loadAppGraph } from "@/lib/qloo/app-graph";
 import type { QlooClient } from "@/lib/qloo/client";
+import {
+  __testSetLiveGraphReady,
+  clearLiveGraphCache,
+} from "@/lib/qloo/live-graph";
 
 const LIVE_GRAPH: QlooGraphSnapshot = {
   version: "qloo-live-test-v1",
@@ -41,6 +45,7 @@ function stubClient(
 describe("loadAppGraph", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    clearLiveGraphCache();
   });
 
   it("reports mock mode and fixture graph without API key", async () => {
@@ -56,6 +61,7 @@ describe("loadAppGraph", () => {
 
   it("reports live mode and uses LiveQlooClient graph when key is set", async () => {
     vi.stubEnv("QLOO_API_KEY", "test-secret");
+    __testSetLiveGraphReady({ ...LIVE_GRAPH, dataSource: "live" });
     expect(getQlooDataMode()).toBe("live");
     const { mode, graph, source } = await loadAppGraph(
       stubClient({ ...LIVE_GRAPH, dataSource: "live" }, "live"),

@@ -7,13 +7,20 @@ import {
   shouldUseLiveQloo,
   type QlooClient,
 } from "@/lib/qloo/client";
+import { getLiveGraphStatus } from "@/lib/qloo/live-graph";
 
-export type QlooDataMode = "mock" | "live" | "live-fallback";
+export type QlooDataMode = "mock" | "live" | "live-warming" | "live-fallback";
 
 export type GraphDataSource = "fixture" | "live";
 
 export function getQlooDataMode(): QlooDataMode {
-  return shouldUseLiveQloo() ? "live" : "mock";
+  if (!shouldUseLiveQloo()) {
+    return "mock";
+  }
+  const status = getLiveGraphStatus();
+  if (status === "ready") return "live";
+  if (status === "warming" || status === "idle") return "live-warming";
+  return "live-fallback";
 }
 
 function graphDataSource(graph: QlooGraphSnapshot): GraphDataSource {
@@ -31,18 +38,39 @@ export async function loadAppGraph(client?: QlooClient): Promise<{
   const qloo = client ?? createQlooClient();
   const graph = await qloo.getGraph();
   const source = graphDataSource(graph);
-  const degraded = qloo.degraded;
+  const buildStatus = getLiveGraphStatus();
 
   if (!hasKey) {
     return { mode: "mock", graph, source, degraded: false };
   }
-  if (degraded) {
+
+  if (buildStatus === "ready" && source === "live") {
+    return { mode: "live", graph, source: "live", degraded: false };
+  }
+
+  if (buildStatus === "degraded") {
     return {
       mode: "live-fallback",
-      graph: source === "fixture" ? graph : { ...FIXTURE_GRAPH, dataSource: "fixture" },
+      graph: { ...FIXTURE_GRAPH, dataSource: "fixture" },
       source: "fixture",
       degraded: true,
     };
   }
-  return { mode: "live", graph, source: "live", degraded: false };
+
+  if (buildStatus === "warming" || buildStatus === "idle") {
+    const fixtureGraph = { ...FIXTURE_GRAPH, dataSource: "fixture" as const };
+    return {
+      mode: "live-warming",
+      graph: fixtureGraph,
+      source: "fixture",
+      degraded: true,
+    };
+  }
+
+  return {
+    mode: "live-fallback",
+    graph: { ...FIXTURE_GRAPH, dataSource: "fixture" },
+    source: "fixture",
+    degraded: true,
+  };
 }
