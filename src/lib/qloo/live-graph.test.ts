@@ -6,10 +6,14 @@ import {
   getCachedLiveGraph,
   getLiveGraphStatus,
   getServingLiveGraph,
+  INSIGHTS_SIGNAL_BATCH_SIZE,
   mapWithConcurrency,
+  meetsLiveGraphCoverage,
+  MIN_LIVE_EDGE_COUNT,
   POOL_CONCURRENCY,
   warmLiveGraphCache,
   __testSetLiveGraphReady,
+  __testSetPartial,
 } from "@/lib/qloo/live-graph";
 
 const SECRET = "test-key";
@@ -28,14 +32,14 @@ function okSearch(name: string, id: string) {
 }
 
 function insightsForTargets(
-  targets: { entity_id: string; affinity: number }[],
+  targets: { entity_id: string; name: string; affinity: number }[],
 ) {
   return {
     success: true,
     results: {
       entities: targets.map((t) => ({
         entity_id: t.entity_id,
-        name: "target",
+        name: t.name,
         query: { affinity: t.affinity },
       })),
     },
@@ -45,6 +49,7 @@ function insightsForTargets(
 function makeSuccessfulFetchStub() {
   const idByName = new Map<string, string>();
   let nextId = 1;
+  let nextInsightId = 1;
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/search")) {
@@ -62,10 +67,12 @@ function makeSuccessfulFetchStub() {
       const signal =
         new URL(url).searchParams.get("signal.interests.entities") ?? "";
       const ids = signal.split(",").filter(Boolean);
-      const targets = ids.slice(0, 3).map((id, i) => ({
-        entity_id: `live-${(i % 5) + 2}`,
+      const targets = ids.map((_, i) => ({
+        entity_id: `insight-${nextInsightId + i}`,
+        name: `Royal Tenenbaums House ${nextInsightId + i}`,
         affinity: 0.85,
       }));
+      nextInsightId += ids.length;
       return new Response(JSON.stringify(insightsForTargets(targets)), {
         status: 200,
       });
@@ -95,6 +102,44 @@ describe("mapWithConcurrency", () => {
   });
 });
 
+describe("meetsLiveGraphCoverage", () => {
+  it("requires minimum edges and outgoing edges per seed domain", () => {
+    const entities = ALL_DOMAIN_SEEDS();
+    const noOutgoing = {
+      entities,
+      edges: Array.from({ length: MIN_LIVE_EDGE_COUNT }, (_, i) => ({
+        fromId: `insight-${i}`,
+        toId: `insight-${i + 1}`,
+        weight: 0.5,
+      })),
+    };
+    expect(meetsLiveGraphCoverage(noOutgoing)).toBe(false);
+
+    const tooFew = {
+      entities,
+      edges: [{ fromId: entities[0].id, toId: "insight-1", weight: 0.9 }],
+    };
+    expect(meetsLiveGraphCoverage(tooFew)).toBe(false);
+
+    const edges = Array.from({ length: MIN_LIVE_EDGE_COUNT }, (_, i) => ({
+      fromId: entities[i % entities.length].id,
+      toId: `insight-${i}`,
+      weight: 0.8,
+    }));
+    expect(meetsLiveGraphCoverage({ entities, edges })).toBe(true);
+  });
+});
+
+function ALL_DOMAIN_SEEDS() {
+  const domains = ["music", "film", "books", "places", "food", "tv"] as const;
+  return domains.map((domain, i) => ({
+    id: `live-${domain}-${i}`,
+    name: `Seed ${domain}`,
+    domain,
+    tags: [] as string[],
+  }));
+}
+
 describe("buildLiveGraphSnapshot", () => {
   afterEach(() => {
     clearLiveGraphCache();
@@ -122,33 +167,107 @@ describe("buildLiveGraphSnapshot", () => {
 
     await expect(
       buildLiveGraphSnapshot({ apiKey: SECRET, fetchImpl: fetchSpy }),
-    ).rejects.toThrow(/edges/);
+    ).rejects.toThrow(/coverage|edges/);
     const searches = fetchSpy.mock.calls.filter((c) =>
       String(c[0]).includes("/search"),
     );
     expect(searches.length).toBeGreaterThan(1);
   });
 
-  it("batches seed ids per target domain in insights calls", async () => {
+  it("adds insight entities and edges from signalling seeds", async () => {
     const fetchSpy = makeSuccessfulFetchStub();
     const graph = await buildLiveGraphSnapshot({
       apiKey: SECRET,
       fetchImpl: fetchSpy,
     });
-    expect(graph.dataSource).toBe("live");
-    expect(graph.edges.length).toBeGreaterThanOrEqual(
-      FIXTURE_GRAPH.edges.length,
+    const insightEntities = graph.entities.filter((e) =>
+      e.tags.includes("qloo-insight"),
     );
+    expect(insightEntities.length).toBeGreaterThan(0);
+    expect(
+      graph.edges.some(
+        (e) =>
+          insightEntities.some((t) => t.id === e.toId) &&
+          graph.entities.some((s) => s.id === e.fromId && !s.tags.includes("qloo-insight")),
+      ),
+    ).toBe(true);
+    expect(meetsLiveGraphCoverage(graph)).toBe(true);
+  });
+
+  it("batches seed ids (max 6) per insights call", async () => {
+    const fetchSpy = makeSuccessfulFetchStub();
+    await buildLiveGraphSnapshot({ apiKey: SECRET, fetchImpl: fetchSpy });
 
     const insightsCalls = fetchSpy.mock.calls.filter((c) =>
       String(c[0]).includes("/v2/insights"),
     );
-    expect(insightsCalls.length).toBeLessThanOrEqual(6);
-    const signal =
-      new URL(String(insightsCalls[0][0])).searchParams.get(
-        "signal.interests.entities",
-      ) ?? "";
-    expect(signal.split(",").length).toBeGreaterThan(1);
+    expect(insightsCalls.length).toBeGreaterThan(0);
+    for (const call of insightsCalls) {
+      const signal =
+        new URL(String(call[0])).searchParams.get(
+          "signal.interests.entities",
+        ) ?? "";
+      const count = signal.split(",").filter(Boolean).length;
+      expect(count).toBeLessThanOrEqual(INSIGHTS_SIGNAL_BATCH_SIZE);
+      expect(count).toBeGreaterThan(0);
+    }
+  });
+
+  it("dedupes food and places into one urn:entity:place insights series", async () => {
+    const fetchSpy = makeSuccessfulFetchStub();
+    await buildLiveGraphSnapshot({ apiKey: SECRET, fetchImpl: fetchSpy });
+
+    const insightsCalls = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).includes("/v2/insights"),
+    );
+    const filterTypes = new Set(
+      insightsCalls.map(
+        (c) =>
+          new URL(String(c[0])).searchParams.get("filter.type") ?? "",
+      ),
+    );
+    expect(filterTypes.size).toBe(5);
+    expect(filterTypes.has("urn:entity:place")).toBe(true);
+    expect(filterTypes.has("urn:entity:movie")).toBe(true);
+  });
+
+  it("skips a timed-out insights batch without aborting the build", async () => {
+    let insightsCalls = 0;
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/search")) {
+        const name = new URL(url).searchParams.get("query") ?? "";
+        return new Response(
+          JSON.stringify(okSearch(name, `seed-${name}`)),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/v2/insights")) {
+        insightsCalls += 1;
+        if (insightsCalls === 1) {
+          throw new Error("Qloo request failed: /v2/insights");
+        }
+        const signal =
+          new URL(url).searchParams.get("signal.interests.entities") ?? "";
+        const ids = signal.split(",").filter(Boolean);
+        const targets = ids.map((_, i) => ({
+          entity_id: `insight-fallback-${insightsCalls}-${i}`,
+          name: "Sorry to Bother You",
+          affinity: 0.9,
+        }));
+        return new Response(JSON.stringify(insightsForTargets(targets)), {
+          status: 200,
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const graph = await buildLiveGraphSnapshot({
+      apiKey: SECRET,
+      fetchImpl: fetchSpy,
+    });
+    expect(graph.edges.length).toBeGreaterThanOrEqual(MIN_LIVE_EDGE_COUNT);
+    expect(insightsCalls).toBeGreaterThan(1);
   });
 });
 
@@ -180,5 +299,36 @@ describe("background warm / serve stale", () => {
 
     expect(getLiveGraphStatus()).toBe("ready");
     expect(getServingLiveGraph().dataSource).toBe("live");
+  });
+
+  it("reports degraded when a retry makes no progress", async () => {
+    const seeds = FIXTURE_GRAPH.entities.slice(0, 6).map((f, i) => ({
+      id: `live-seed-${i}`,
+      name: f.name,
+      domain: f.domain,
+      tags: [...f.tags],
+    }));
+    const progress = {
+      fixtureIdMap: {},
+      entities: seeds,
+      edges: [],
+      searchedFixtures: new Set(FIXTURE_GRAPH.entities.map((e) => e.id)),
+      insightsFilterTypesDone: new Set<string>(),
+    };
+    __testSetPartial(progress);
+
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/v2/insights")) {
+        throw new Error("Qloo request timed out: /v2/insights");
+      }
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    });
+
+    warmLiveGraphCache({ apiKey: SECRET, fetchImpl: fetchSpy });
+    await getCachedLiveGraph({ apiKey: SECRET, fetchImpl: fetchSpy }).catch(
+      () => undefined,
+    );
+    expect(getLiveGraphStatus()).toBe("degraded");
   });
 });
