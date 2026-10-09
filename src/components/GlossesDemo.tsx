@@ -124,7 +124,9 @@ export function GlossesDemo({
             className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
               mode === "live"
                 ? "bg-emerald-100 text-emerald-800"
-                : "bg-zinc-200 text-zinc-700"
+                : mode === "live-fallback"
+                  ? "bg-amber-100 text-amber-900"
+                  : "bg-zinc-200 text-zinc-700"
             }`}
           >
             Qloo {mode} · {graph.version}

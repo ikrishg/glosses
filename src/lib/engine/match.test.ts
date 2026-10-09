@@ -5,14 +5,23 @@ import {
   SEED_PEOPLE,
 } from "@/lib/demo/seed";
 import { addTaste } from "@/lib/engine/profile";
+import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
 
 describe("tasteMatchScore", () => {
   it("scores higher when tastes overlap", () => {
     const viewer = createEmptyDemoUser();
     const withRadiohead = addTaste(viewer, "qloo:music:radiohead");
     const maya = SEED_PEOPLE[0].profile;
-    const { score: high } = tasteMatchScore(withRadiohead, maya);
-    const { score: low } = tasteMatchScore(withRadiohead, SEED_PEOPLE[3].profile);
+    const { score: high } = tasteMatchScore(
+      withRadiohead,
+      maya,
+      FIXTURE_GRAPH,
+    );
+    const { score: low } = tasteMatchScore(
+      withRadiohead,
+      SEED_PEOPLE[3].profile,
+      FIXTURE_GRAPH,
+    );
     expect(high).toBeGreaterThan(low);
   });
 });
@@ -20,7 +29,7 @@ describe("tasteMatchScore", () => {
 describe("rankPeopleByTaste", () => {
   it("prefers friends over second network and strangers at equal scores", () => {
     const viewer = createEmptyDemoUser();
-    const ranked = rankPeopleByTaste(viewer, SEED_PEOPLE);
+    const ranked = rankPeopleByTaste(viewer, SEED_PEOPLE, FIXTURE_GRAPH);
     const tiers = ranked.map((r) => r.tier);
     const firstStranger = tiers.indexOf("stranger");
     const lastFriend = tiers.lastIndexOf("friend");
@@ -31,7 +40,7 @@ describe("rankPeopleByTaste", () => {
     let viewer = createEmptyDemoUser();
     viewer = addTaste(viewer, "qloo:music:radiohead");
     viewer = addTaste(viewer, "qloo:film:her");
-    const ranked = rankPeopleByTaste(viewer, SEED_PEOPLE);
+    const ranked = rankPeopleByTaste(viewer, SEED_PEOPLE, FIXTURE_GRAPH);
     const friends = ranked.filter((r) => r.tier === "friend");
     expect(friends[0].displayName).toContain("Maya");
   });

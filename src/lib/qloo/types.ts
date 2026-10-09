@@ -25,6 +25,10 @@ export interface QlooGraphSnapshot {
   version: string;
   entities: QlooEntity[];
   edges: QlooAffinityEdge[];
+  /** Fixture catalog id → active entity id (live graph builds). */
+  fixtureIdMap?: Record<string, string>;
+  /** Whether this snapshot came from Qloo HTTP or local fixtures. */
+  dataSource?: "fixture" | "live";
 }
 
 export interface TasteSignal {

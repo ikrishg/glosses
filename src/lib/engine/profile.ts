@@ -4,7 +4,6 @@ import type {
   UserTasteProfile,
 } from "@/lib/qloo/types";
 import { entityInGraph } from "@/lib/graph/lookup";
-import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
 
 export interface DomainWeights {
   music: number;
@@ -42,7 +41,7 @@ export function addTaste(
 
 export function domainWeights(
   profile: UserTasteProfile,
-  graph: QlooGraphSnapshot = FIXTURE_GRAPH,
+  graph: QlooGraphSnapshot,
 ): DomainWeights {
   const weights: DomainWeights = {
     music: 0,

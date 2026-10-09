@@ -82,6 +82,10 @@ export function resolveEntityIdForGraph(
   graph: QlooGraphSnapshot,
   fixtureEntityId: string,
 ): string | null {
+  const mapped = graph.fixtureIdMap?.[fixtureEntityId];
+  if (mapped) {
+    return mapped;
+  }
   const index = buildEntityIndex(graph);
   if (index.has(fixtureEntityId)) {
     return fixtureEntityId;
