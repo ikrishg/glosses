@@ -3,9 +3,11 @@ import { GlossesDemo } from "@/components/GlossesDemo";
 import { buildTasteQuiz } from "@/lib/demo/quiz-catalog";
 import { buildSeedPeople } from "@/lib/demo/seed";
 import { loadAppGraph } from "@/lib/qloo/app-graph";
+import { scheduleLiveGraphWarmFromEnv } from "@/lib/qloo/schedule-warm";
 
 export async function GlossesHome() {
   await connection();
+  scheduleLiveGraphWarmFromEnv();
   const { mode, graph } = await loadAppGraph();
   const quiz = buildTasteQuiz(graph);
   const seedPeople = buildSeedPeople(graph);

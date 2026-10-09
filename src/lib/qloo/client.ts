@@ -13,8 +13,8 @@ import {
 import {
   clearLiveGraphCache,
   getServingLiveGraph,
-  warmLiveGraphCache,
 } from "@/lib/qloo/live-graph";
+import { scheduleLiveGraphWarm } from "@/lib/qloo/schedule-warm";
 import { qlooFetch, type QlooFetchOptions } from "@/lib/qloo/qloo-fetch";
 
 export type QlooClientMode = "mock" | "live";
@@ -88,7 +88,7 @@ export class LiveQlooClient implements QlooClient {
       throw new Error("QLOO_API_KEY is required for LiveQlooClient");
     }
     this.fetchOpts = { apiKey, fetchImpl };
-    warmLiveGraphCache(this.fetchOpts);
+    scheduleLiveGraphWarm(this.fetchOpts);
   }
 
   get degraded(): boolean {
@@ -96,7 +96,7 @@ export class LiveQlooClient implements QlooClient {
   }
 
   async getGraph(): Promise<QlooGraphSnapshot> {
-    warmLiveGraphCache(this.fetchOpts);
+    scheduleLiveGraphWarm(this.fetchOpts);
     return getServingLiveGraph();
   }
 

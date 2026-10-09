@@ -15,11 +15,15 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const RETRY_COOLDOWN_MS = 60 * 1000;
 const BUILD_BUDGET_MS = 60_000;
 export const POOL_CONCURRENCY = 3;
+export const MIN_LIVE_EDGE_COUNT = 20;
+export const INSIGHTS_SIGNAL_BATCH_SIZE = 6;
+export const INSIGHTS_TIMEOUT_MS = 20_000;
+const INSIGHT_ENTITY_TAG = "qloo-insight";
+
 const MIN_RESOLVED_ENTITIES = Math.max(
   3,
   Math.ceil(FIXTURE_GRAPH.entities.length * 0.2),
 );
-const MIN_LIVE_EDGES = FIXTURE_GRAPH.edges.length;
 
 const ALL_DOMAINS: QlooDomain[] = [
   "music",
@@ -28,6 +32,33 @@ const ALL_DOMAINS: QlooDomain[] = [
   "places",
   "food",
   "tv",
+];
+
+/** One insights call per Qloo filter type (`food` + `places` share `urn:entity:place`). */
+const INSIGHT_FILTER_GROUPS: {
+  filterType: string;
+  entityDomain: QlooDomain;
+}[] = [
+  {
+    filterType: QLOO_SEARCH_TYPE_BY_DOMAIN.music,
+    entityDomain: "music",
+  },
+  {
+    filterType: QLOO_SEARCH_TYPE_BY_DOMAIN.film,
+    entityDomain: "film",
+  },
+  {
+    filterType: QLOO_SEARCH_TYPE_BY_DOMAIN.books,
+    entityDomain: "books",
+  },
+  {
+    filterType: QLOO_SEARCH_TYPE_BY_DOMAIN.tv,
+    entityDomain: "tv",
+  },
+  {
+    filterType: QLOO_SEARCH_TYPE_BY_DOMAIN.places,
+    entityDomain: "places",
+  },
 ];
 
 type SearchHit = {
@@ -48,7 +79,7 @@ export type LiveGraphBuildProgress = {
   entities: QlooEntity[];
   edges: QlooAffinityEdge[];
   searchedFixtures: Set<string>;
-  insightsDomainsDone: Set<QlooDomain>;
+  insightsFilterTypesDone: Set<string>;
 };
 
 export type LiveGraphStatus = "idle" | "warming" | "ready" | "degraded";
@@ -70,7 +101,7 @@ function emptyProgress(): LiveGraphBuildProgress {
     entities: [],
     edges: [],
     searchedFixtures: new Set(),
-    insightsDomainsDone: new Set(),
+    insightsFilterTypesDone: new Set(),
   };
 }
 
@@ -80,8 +111,47 @@ function cloneProgress(src: LiveGraphBuildProgress): LiveGraphBuildProgress {
     entities: [...src.entities],
     edges: [...src.edges],
     searchedFixtures: new Set(src.searchedFixtures),
-    insightsDomainsDone: new Set(src.insightsDomainsDone),
+    insightsFilterTypesDone: new Set(src.insightsFilterTypesDone),
   };
+}
+
+export function progressFingerprint(
+  progress: LiveGraphBuildProgress,
+): string {
+  return JSON.stringify({
+    entities: progress.entities.length,
+    edges: progress.edges.length,
+    searched: progress.searchedFixtures.size,
+    insights: [...progress.insightsFilterTypesDone].sort(),
+  });
+}
+
+export function isSeedEntity(entity: QlooEntity): boolean {
+  return !entity.tags.includes(INSIGHT_ENTITY_TAG);
+}
+
+export function meetsLiveGraphCoverage(state: {
+  entities: QlooEntity[];
+  edges: QlooAffinityEdge[];
+}): boolean {
+  if (state.edges.length < MIN_LIVE_EDGE_COUNT) {
+    return false;
+  }
+  for (const domain of ALL_DOMAINS) {
+    const seeds = state.entities.filter(
+      (e) => e.domain === domain && isSeedEntity(e),
+    );
+    if (seeds.length === 0) {
+      continue;
+    }
+    const hasOutgoing = seeds.some((seed) =>
+      state.edges.some((e) => e.fromId === seed.id),
+    );
+    if (!hasOutgoing) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function clearLiveGraphCache(): void {
@@ -100,6 +170,10 @@ export function __testSetLiveGraphReady(graph: QlooGraphSnapshot): void {
 
 export function __testSetLiveGraphStatus(status: LiveGraphStatus): void {
   lastStatus = status;
+}
+
+export function __testSetPartial(progress: LiveGraphBuildProgress): void {
+  partial = cloneProgress(progress);
 }
 
 function liveGraphVersion(): string {
@@ -157,6 +231,14 @@ export async function mapWithConcurrency<T, R>(
   return results;
 }
 
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
 async function searchEntityId(
   fixture: QlooEntity,
   fetchOpts: QlooFetchOptions,
@@ -175,6 +257,10 @@ async function searchEntityId(
       console.warn(
         `[qloo] search ${err.status} for "${fixture.name}" — skipping seed`,
       );
+    } else {
+      console.warn(
+        `[qloo] search failed for "${fixture.name}" — skipping seed`,
+      );
     }
     return null;
   }
@@ -182,13 +268,12 @@ async function searchEntityId(
 
 async function fetchInsightsBatch(
   seedEntityIds: string[],
-  targetDomain: QlooDomain,
+  filterType: string,
   fetchOpts: QlooFetchOptions,
 ): Promise<InsightsHit[]> {
   if (seedEntityIds.length === 0) {
     return [];
   }
-  const filterType = qlooInsightsFilterType(targetDomain);
   const data = (await qlooFetch(
     "/v2/insights",
     {
@@ -196,7 +281,7 @@ async function fetchInsightsBatch(
       "signal.interests.entities": seedEntityIds.join(","),
       take: 48,
     },
-    fetchOpts,
+    { ...fetchOpts, timeoutMs: INSIGHTS_TIMEOUT_MS },
   )) as { success?: boolean; results?: { entities?: InsightsHit[] } };
   return data.results?.entities ?? [];
 }
@@ -213,6 +298,62 @@ function mergeEdges(
   if (edgeKeys.has(key)) return;
   edgeKeys.add(key);
   edges.push({ fromId, toId, weight });
+}
+
+function ensureInsightEntity(
+  hit: InsightsHit,
+  entityDomain: QlooDomain,
+  state: LiveGraphBuildProgress,
+  liveIdToEntity: Map<string, QlooEntity>,
+): QlooEntity {
+  const existing = liveIdToEntity.get(hit.entity_id);
+  if (existing) {
+    return existing;
+  }
+  const entity: QlooEntity = {
+    id: hit.entity_id,
+    name: hit.name?.trim() || "Qloo pick",
+    domain: entityDomain,
+    tags: [INSIGHT_ENTITY_TAG],
+  };
+  state.entities.push(entity);
+  liveIdToEntity.set(hit.entity_id, entity);
+  return entity;
+}
+
+function seedExcludedFromInsightFilter(
+  seedDomain: QlooDomain,
+  filterType: string,
+): boolean {
+  return qlooInsightsFilterType(seedDomain) === filterType;
+}
+
+function ingestInsightHits(
+  hits: InsightsHit[],
+  signallingSeedIds: string[],
+  filterType: string,
+  entityDomain: QlooDomain,
+  state: LiveGraphBuildProgress,
+  liveIdToEntity: Map<string, QlooEntity>,
+  edgeKeys: Set<string>,
+): void {
+  for (const hit of hits) {
+    const weight = hit.query?.affinity ?? 0;
+    if (weight <= 0) continue;
+    const target = ensureInsightEntity(
+      hit,
+      entityDomain,
+      state,
+      liveIdToEntity,
+    );
+    for (const seedId of signallingSeedIds) {
+      const seed = liveIdToEntity.get(seedId);
+      if (!seed || !isSeedEntity(seed)) continue;
+      if (seedExcludedFromInsightFilter(seed.domain, filterType)) continue;
+      if (seed.id === target.id) continue;
+      mergeEdges(state.edges, edgeKeys, seed.id, target.id, weight);
+    }
+  }
 }
 
 export async function buildLiveGraphSnapshot(
@@ -250,11 +391,13 @@ export async function buildLiveGraphSnapshot(
       id: liveId,
       name: fixture.name,
       domain: fixture.domain,
-      tags: fixture.tags,
+      tags: [...fixture.tags],
     };
     state.entities.push(entity);
     liveIdToEntity.set(liveId, entity);
   }
+
+  partial = cloneProgress(state);
 
   if (state.entities.length < MIN_RESOLVED_ENTITIES) {
     throw new Error(
@@ -262,53 +405,64 @@ export async function buildLiveGraphSnapshot(
     );
   }
 
-  const allSeedIds = state.entities.map((e) => e.id);
-  const insightDomains = ALL_DOMAINS.filter(
-    (d) => !state.insightsDomainsDone.has(d),
+  const allSeedIds = state.entities
+    .filter(isSeedEntity)
+    .map((e) => e.id);
+
+  const pendingGroups = INSIGHT_FILTER_GROUPS.filter(
+    (g) => !state.insightsFilterTypesDone.has(g.filterType),
   );
 
   await mapWithConcurrency(
-    insightDomains,
+    pendingGroups,
     POOL_CONCURRENCY,
     deadline,
-    async (targetDomain) => {
+    async (group) => {
       if (budgetExpired(deadline)) {
         return;
       }
-      try {
-        const hits = await fetchInsightsBatch(
-          allSeedIds,
-          targetDomain,
-          fetchOpts,
-        );
-        state.insightsDomainsDone.add(targetDomain);
-        for (const hit of hits) {
-          const target = liveIdToEntity.get(hit.entity_id);
-          if (!target || target.domain !== targetDomain) continue;
-          const weight = hit.query?.affinity ?? 0;
-          for (const seed of state.entities) {
-            if (seed.domain === targetDomain) continue;
-            mergeEdges(state.edges, edgeKeys, seed.id, target.id, weight);
-          }
+      const batches = chunkArray(allSeedIds, INSIGHTS_SIGNAL_BATCH_SIZE);
+      let groupSucceeded = true;
+      for (const batch of batches) {
+        if (budgetExpired(deadline)) {
+          groupSucceeded = false;
+          break;
         }
-      } catch (err) {
-        if (err instanceof QlooHttpError) {
-          console.warn(
-            `[qloo] batched insights ${err.status} for ${targetDomain}`,
+        try {
+          const hits = await fetchInsightsBatch(
+            batch,
+            group.filterType,
+            fetchOpts,
           );
-          state.insightsDomainsDone.add(targetDomain);
-          return;
+          ingestInsightHits(
+            hits,
+            batch,
+            group.filterType,
+            group.entityDomain,
+            state,
+            liveIdToEntity,
+            edgeKeys,
+          );
+        } catch (err) {
+          groupSucceeded = false;
+          const detail =
+            err instanceof Error ? err.message : "insights batch failed";
+          console.warn(
+            `[qloo] insights batch (${group.filterType}, ${batch.length} signals): ${detail}`,
+          );
         }
-        throw err;
+      }
+      if (groupSucceeded) {
+        state.insightsFilterTypesDone.add(group.filterType);
       }
     },
   );
 
   partial = cloneProgress(state);
 
-  if (state.edges.length < MIN_LIVE_EDGES) {
+  if (!meetsLiveGraphCoverage(state)) {
     throw new Error(
-      `Live graph build incomplete: ${state.edges.length}/${MIN_LIVE_EDGES} edges`,
+      `Live graph build incomplete: ${state.edges.length} edges, coverage thresholds not met`,
     );
   }
 
@@ -323,8 +477,14 @@ export async function buildLiveGraphSnapshot(
 
 function scheduleRetry(fetchOpts: QlooFetchOptions): void {
   retryAfter = Date.now() + RETRY_COOLDOWN_MS;
-  lastStatus =
-    readyCache !== null ? "ready" : partial !== null ? "warming" : "degraded";
+  if (readyCache !== null) {
+    lastStatus = "ready";
+  } else if (
+    partial !== null &&
+    lastStatus !== "degraded"
+  ) {
+    lastStatus = "warming";
+  }
   setTimeout(() => {
     warmLiveGraphCache(fetchOpts);
   }, RETRY_COOLDOWN_MS);
@@ -332,6 +492,7 @@ function scheduleRetry(fetchOpts: QlooFetchOptions): void {
 
 function runBackgroundBuild(fetchOpts: QlooFetchOptions): Promise<void> {
   const stale = readyCache;
+  const progressAtStart = partial ? progressFingerprint(partial) : null;
   lastStatus = stale ? "ready" : "warming";
 
   return buildLiveGraphSnapshot(fetchOpts, partial ?? undefined)
@@ -345,10 +506,16 @@ function runBackgroundBuild(fetchOpts: QlooFetchOptions): Promise<void> {
       console.warn(
         `[qloo] background graph build: ${err instanceof Error ? err.message : "failed"}`,
       );
+      const progressAtEnd = partial ? progressFingerprint(partial) : null;
       if (readyCache) {
         lastStatus = "ready";
+      } else if (
+        progressAtStart !== null &&
+        progressAtStart === progressAtEnd
+      ) {
+        lastStatus = "degraded";
       } else {
-        lastStatus = partial ? "warming" : "degraded";
+        lastStatus = "warming";
       }
       scheduleRetry(fetchOpts);
     })
@@ -384,14 +551,22 @@ export function warmLiveGraphCache(fetchOpts: QlooFetchOptions): void {
   inflight = runBackgroundBuild(fetchOpts);
 }
 
-/** @deprecated Requests should use getServingLiveGraph — kept for tests. */
-export async function getCachedLiveGraph(
+/** Await the in-flight background build (for `after()` / warm routes). */
+export async function awaitLiveGraphBuild(
   fetchOpts: QlooFetchOptions,
-): Promise<QlooGraphSnapshot> {
+): Promise<LiveGraphStatus> {
   warmLiveGraphCache(fetchOpts);
   if (inflight) {
     await inflight;
   }
+  return getLiveGraphStatus();
+}
+
+/** @deprecated Requests should use getServingLiveGraph — kept for tests. */
+export async function getCachedLiveGraph(
+  fetchOpts: QlooFetchOptions,
+): Promise<QlooGraphSnapshot> {
+  await awaitLiveGraphBuild(fetchOpts);
   if (readyCache) {
     return readyCache.graph;
   }
