@@ -33,6 +33,32 @@ afterEach(() => {
 });
 
 describe("search_entities", () => {
+  it("labels live Qloo search results as source live", async () => {
+    const client = {
+      mode: "live" as const,
+      degraded: false,
+      searchDataSource: "live" as const,
+      getGraph: async () => ({
+        ...FIXTURE_GRAPH,
+        version: "qloo-live-test",
+        dataSource: "fixture" as const,
+      }),
+      searchEntities: async () => [
+        {
+          id: "live-entity-1",
+          name: "Radiohead",
+          domain: "music" as const,
+          tags: [],
+        },
+      ],
+      logTaste: async () => undefined,
+      getProfile: async () => null,
+    };
+    const r = await searchEntities(client, { domain: "music", query: "radio" });
+    expect(r.source).toBe("live");
+    expect(r.fixtureId).toBeNull();
+  });
+
   it("returns fixture entities for a domain with a stable fixture id", async () => {
     const a = await searchEntities(mock, { domain: "music", query: "" });
     const b = await searchEntities(mock, { domain: "music", query: "" });
@@ -220,6 +246,7 @@ describe("fixture/live switch", () => {
     const client = {
       mode: "live" as const,
       degraded: false,
+      searchDataSource: "live" as const,
       getGraph: async () => liveGraph,
       searchEntities: async () => liveGraph.entities,
       logTaste: async () => undefined,

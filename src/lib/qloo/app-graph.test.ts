@@ -30,6 +30,7 @@ function stubClient(
   return {
     mode,
     degraded: false,
+    searchDataSource: "fixture" as const,
     getGraph: async () => graph,
     searchEntities: async () => graph.entities,
     logTaste: async () => undefined,

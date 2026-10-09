@@ -173,6 +173,7 @@ describe("loadAppGraph live-fallback", () => {
     const client = {
       mode: "live" as const,
       degraded: true,
+      searchDataSource: "fixture" as const,
       getGraph: async () => ({ ...FIXTURE_GRAPH, dataSource: "fixture" as const }),
       searchEntities: async () => [],
       logTaste: async () => undefined,
