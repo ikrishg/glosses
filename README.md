@@ -32,16 +32,19 @@ npm run build
 npm start
 ```
 
-## Qloo API (mock today, live swap)
+## Qloo API (mock default, live on deploy)
 
 The Qloo client lives behind a small interface in `src/lib/qloo/client.ts`:
 
 | Mode | When | Implementation |
 |------|------|----------------|
 | **Mock** (default) | `QLOO_API_KEY` unset | `MockQlooClient` serves `FIXTURE_GRAPH` |
-| **Live** | `QLOO_API_KEY` set | `LiveQlooClient` calls Qloo HTTP APIs |
+| **Live** | `QLOO_API_KEY` set, API healthy | `LiveQlooClient` builds a graph from Qloo `/search` + `/v2/insights` |
+| **Live fallback** | Key set but Qloo errors | Same fixture graph as mock; `degraded: true` |
 
-1. Copy env template and set your key:
+Env vars are **server-only** (`QLOO_API_KEY`, optional `QLOO_BASE_URL`). There are no `NEXT_PUBLIC_*` Qloo variables.
+
+1. Copy env template and set your key on the host (Vercel project env, not in git):
 
    ```bash
    cp .env.example .env.local
@@ -50,9 +53,19 @@ The Qloo client lives behind a small interface in `src/lib/qloo/client.ts`:
 
 2. Restart the dev server (or redeploy on Vercel with the env var).
 
-3. Confirm mode: `GET /api/qloo-mode` returns `{ "mode": "live", "graphVersion": "..." }`.
+3. Confirm mode: `GET /api/qloo-mode` returns e.g. `{ "mode": "live", "graphVersion": "qloo-live-2026-10-09", "source": "live", "degraded": false }`. On API failure you will see `"mode": "live-fallback"` and `"degraded": true`.
 
-**Note:** `LiveQlooClient` is wired to the expected Qloo base URL and auth header pattern; when your key is issued, validate response shapes against Qloo’s docs and adjust parsing if needed. Taste persistence for the demo remains in the browser session; production would persist via your backend.
+### Live mode details
+
+- **Base URL:** `https://hackathon.api.qloo.com` (override with `QLOO_BASE_URL`). Production `api.qloo.com` rejects hackathon keys.
+- **Auth:** `X-Api-Key` header (not Bearer).
+- **Endpoints:** `GET /search` (entity lookup) and `GET /v2/insights` (cross-domain affinities). There is no graph snapshot endpoint; the app composes a snapshot at request time, caches it in memory (~6h), and versions it as `qloo-live-<date>`.
+- **Fixture id map:** Demo quiz, seeded friends, and the AC click path still resolve fixture catalog ids to live Qloo entity ids via `fixtureIdMap`.
+- **Optional smoke:** `npm run qloo:smoke` (skips without a key; prints status codes and result counts only).
+
+Live verification against Qloo happens once the hackathon key is present in the deploy environment (not in this public repo).
+
+Taste persistence for the demo remains in the browser session; production would persist via your backend.
 
 ## Qloo MCP server (`src/mcp/qloo/`)
 

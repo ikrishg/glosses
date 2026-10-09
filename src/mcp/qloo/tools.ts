@@ -159,18 +159,18 @@ function canonicalTastes(tastes: z.infer<typeof tasteSignalSchema>[]) {
 }
 
 function responseMeta(
-  client: QlooClient,
-  graphVersion: string,
+  graph: { version: string; dataSource?: "fixture" | "live" },
   tool: QlooToolName,
   canonicalInput: unknown,
 ) {
-  if (client.mode === "live") {
-    return { source: "live" as const, fixtureId: null, graphVersion };
+  const source = graph.dataSource ?? "fixture";
+  if (source === "live") {
+    return { source: "live" as const, fixtureId: null, graphVersion: graph.version };
   }
   return {
     source: "fixture" as const,
-    fixtureId: `${graphVersion}/${tool}/${fnv1a(JSON.stringify(canonicalInput))}`,
-    graphVersion,
+    fixtureId: `${graph.version}/${tool}/${fnv1a(JSON.stringify(canonicalInput))}`,
+    graphVersion: graph.version,
   };
 }
 
@@ -210,7 +210,7 @@ export async function searchEntities(
   ]);
   const entities = args.limit ? found.slice(0, args.limit) : found;
   return {
-    ...responseMeta(client, graph.version, "search_entities", [
+    ...responseMeta(graph, "search_entities", [
       args.domain,
       args.query.trim().toLowerCase(),
       args.limit ?? null,
@@ -226,7 +226,7 @@ export async function recommend(
   const args = z.object(recommendInput).parse(rawArgs);
   const graph = await client.getGraph();
   return {
-    ...responseMeta(client, graph.version, "recommend", [
+    ...responseMeta(graph, "recommend", [
       canonicalTastes(args.profile.tastes),
       args.limit,
     ]),
@@ -262,7 +262,7 @@ export async function compareTaste(
   );
 
   return {
-    ...responseMeta(client, graph.version, "compare_taste", [
+    ...responseMeta(graph, "compare_taste", [
       canonicalTastes(args.viewer.tastes),
       args.people.map((p) => [p.personId, p.tier, canonicalTastes(p.tastes)]),
       partner.personId,

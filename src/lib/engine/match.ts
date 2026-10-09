@@ -3,7 +3,6 @@ import type {
   TasteMatchResult,
   UserTasteProfile,
 } from "@/lib/qloo/types";
-import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
 import { entityInGraph } from "@/lib/graph/lookup";
 import { tasteEntitySet } from "@/lib/engine/profile";
 
@@ -28,7 +27,7 @@ const TIER_ORDER: Record<SocialTier, number> = {
 export function tasteMatchScore(
   a: UserTasteProfile,
   b: UserTasteProfile,
-  graph: QlooGraphSnapshot = FIXTURE_GRAPH,
+  graph: QlooGraphSnapshot,
 ): { score: number; sharedEntityIds: string[] } {
   const setA = tasteEntitySet(a);
   const setB = tasteEntitySet(b);
@@ -73,7 +72,7 @@ export function tasteMatchScore(
 export function rankPeopleByTaste(
   viewer: UserTasteProfile,
   candidates: RankablePerson[],
-  graph: QlooGraphSnapshot = FIXTURE_GRAPH,
+  graph: QlooGraphSnapshot,
 ): TasteMatchResult[] {
   return candidates
     .map((c) => {

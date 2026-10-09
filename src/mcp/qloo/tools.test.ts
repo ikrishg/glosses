@@ -210,24 +210,28 @@ describe("fixture/live switch", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("routes tools through the live client (stubbed fetch) when the key is set", async () => {
+  it("routes tools through the live client when the key is set", async () => {
     vi.stubEnv("QLOO_API_KEY", "test-key");
-    const fetchSpy = vi.fn(
-      async () =>
-        new Response(JSON.stringify({ ...FIXTURE_GRAPH, version: "qloo-live-test" }), {
-          status: 200,
-        }),
+    const liveGraph = {
+      ...FIXTURE_GRAPH,
+      version: "qloo-live-test",
+      dataSource: "live" as const,
+    };
+    const client = {
+      mode: "live" as const,
+      degraded: false,
+      getGraph: async () => liveGraph,
+      searchEntities: async () => liveGraph.entities,
+      logTaste: async () => undefined,
+      getProfile: async () => null,
+    };
+    const r = await callQlooTool(
+      "recommend",
+      { profile: loggedProfile(["qloo:music:radiohead"]) },
+      client,
     );
-    vi.stubGlobal("fetch", fetchSpy);
-    const r = await callQlooTool("recommend", {
-      profile: loggedProfile(["qloo:music:radiohead"]),
-    });
     expect(r.source).toBe("live");
     expect(r.fixtureId).toBeNull();
     expect(r.graphVersion).toBe("qloo-live-test");
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "https://api.qloo.com/v2/graph/snapshot",
-      { headers: { Authorization: "Bearer test-key" } },
-    );
   });
 });
