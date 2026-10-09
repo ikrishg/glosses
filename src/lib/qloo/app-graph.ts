@@ -31,7 +31,7 @@ export async function loadAppGraph(client?: QlooClient): Promise<{
   const qloo = client ?? createQlooClient();
   const graph = await qloo.getGraph();
   const source = graphDataSource(graph);
-  const degraded = qloo.degraded || (hasKey && source === "fixture");
+  const degraded = qloo.degraded;
 
   if (!hasKey) {
     return { mode: "mock", graph, source, degraded: false };

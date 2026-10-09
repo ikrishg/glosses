@@ -1,21 +1,18 @@
-import { GlossesDemo } from "@/components/GlossesDemo";
-import { buildTasteQuiz } from "@/lib/demo/quiz-catalog";
-import { buildSeedPeople } from "@/lib/demo/seed";
-import { loadAppGraph } from "@/lib/qloo/app-graph";
+import { Suspense } from "react";
+import { GlossesHome } from "@/app/glosses-home";
 
-export default async function Home() {
-  const { mode, graph } = await loadAppGraph();
-  const quiz = buildTasteQuiz(graph);
-  const seedPeople = buildSeedPeople(graph);
-
+function GlossesLoading() {
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900">
-      <GlossesDemo
-        mode={mode}
-        graph={graph}
-        quiz={quiz}
-        seedPeople={seedPeople}
-      />
+    <div className="min-h-screen bg-zinc-50 px-4 py-10 text-zinc-600">
+      Loading taste graph…
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<GlossesLoading />}>
+      <GlossesHome />
+    </Suspense>
   );
 }

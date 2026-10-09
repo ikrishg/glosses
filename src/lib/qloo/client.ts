@@ -13,6 +13,7 @@ import {
 import {
   getCachedLiveGraph,
   clearLiveGraphCache,
+  warmLiveGraphCache,
 } from "@/lib/qloo/live-graph";
 import { qlooFetch, type QlooFetchOptions } from "@/lib/qloo/qloo-fetch";
 
@@ -22,6 +23,8 @@ export interface QlooClient {
   readonly mode: QlooClientMode;
   /** True when live calls failed and fixture data is being served. */
   readonly degraded: boolean;
+  /** Whether the latest `searchEntities` call hit Qloo HTTP or fixtures. */
+  readonly searchDataSource: "live" | "fixture";
   getGraph(): Promise<QlooGraphSnapshot>;
   searchEntities(domain: QlooDomain, query: string): Promise<QlooEntity[]>;
   logTaste(userId: string, entityId: string): Promise<void>;
@@ -76,6 +79,7 @@ function fixtureSearch(domain: QlooDomain, query: string): QlooEntity[] {
 
 export class LiveQlooClient implements QlooClient {
   readonly mode = "live" as const;
+  searchDataSource: "live" | "fixture" = "fixture";
   private _degraded = false;
   private readonly fetchOpts: QlooFetchOptions;
 
@@ -84,6 +88,7 @@ export class LiveQlooClient implements QlooClient {
       throw new Error("QLOO_API_KEY is required for LiveQlooClient");
     }
     this.fetchOpts = { apiKey, fetchImpl };
+    warmLiveGraphCache(this.fetchOpts);
   }
 
   get degraded(): boolean {
@@ -106,6 +111,7 @@ export class LiveQlooClient implements QlooClient {
 
   async searchEntities(domain: QlooDomain, query: string): Promise<QlooEntity[]> {
     if (this._degraded) {
+      this.searchDataSource = "fixture";
       return fixtureSearch(domain, query);
     }
     try {
@@ -119,9 +125,11 @@ export class LiveQlooClient implements QlooClient {
         },
         this.fetchOpts,
       )) as { results?: SearchRow[] };
+      this.searchDataSource = "live";
       return (data.results ?? []).map((row) => mapSearchRow(row, domain));
     } catch {
       this._degraded = true;
+      this.searchDataSource = "fixture";
       return fixtureSearch(domain, query);
     }
   }
@@ -139,6 +147,7 @@ export class LiveQlooClient implements QlooClient {
 export class MockQlooClient implements QlooClient {
   readonly mode = "mock" as const;
   readonly degraded = false;
+  readonly searchDataSource = "fixture" as const;
 
   async getGraph(): Promise<QlooGraphSnapshot> {
     return fixtureGraph();
