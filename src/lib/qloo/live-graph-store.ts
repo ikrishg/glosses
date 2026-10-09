@@ -10,7 +10,6 @@ export type LiveGraphBuildProgress = {
   insightsJobsDone: Set<string>;
 };
 
-const VERCEL_CACHE_KEY = "glosses:live-graph:v1";
 const GLOBAL_KEY = "__glossesLiveGraphMem__";
 
 export type LiveCache = {
@@ -117,77 +116,4 @@ export function applyPersistedState(
   mem.partial = persisted.partial
     ? deserializeProgress(persisted.partial)
     : null;
-}
-
-type RuntimeCacheLike = {
-  get: (key: string) => Promise<unknown>;
-  set: (
-    key: string,
-    value: unknown,
-    opts?: { ttl?: number },
-  ) => Promise<void>;
-  delete?: (key: string) => Promise<void>;
-};
-
-let vercelCachePromise: Promise<RuntimeCacheLike | null> | null = null;
-
-async function vercelRuntimeCache(): Promise<RuntimeCacheLike | null> {
-  if (vercelCachePromise) {
-    return vercelCachePromise;
-  }
-  vercelCachePromise = (async () => {
-    try {
-      const mod = await import("@vercel/functions");
-      if (typeof mod.getCache === "function") {
-        return mod.getCache() as RuntimeCacheLike;
-      }
-    } catch {
-      // Local dev / tests without @vercel/functions runtime.
-    }
-    return null;
-  })();
-  return vercelCachePromise;
-}
-
-export async function loadSharedLiveGraphState(): Promise<void> {
-  const cache = await vercelRuntimeCache();
-  if (!cache) {
-    return;
-  }
-  const raw = await cache.get(VERCEL_CACHE_KEY);
-  if (!raw || typeof raw !== "object") {
-    return;
-  }
-  applyPersistedState(memoryStore(), raw as PersistedLiveGraphState);
-}
-
-export async function clearSharedLiveGraphState(): Promise<void> {
-  const cache = await vercelRuntimeCache();
-  if (cache && typeof cache.delete === "function") {
-    await cache.delete(VERCEL_CACHE_KEY);
-  }
-}
-
-export async function persistSharedLiveGraphState(): Promise<void> {
-  const cache = await vercelRuntimeCache();
-  if (!cache) {
-    return;
-  }
-  const payload = snapshotPersistedState(memoryStore());
-  const ttlSeconds = Math.max(
-    60,
-    Math.floor(
-      ((payload.readyCache?.expiresAt ?? Date.now() + 6 * 60 * 60 * 1000) -
-        Date.now()) /
-        1000,
-    ),
-  );
-  await cache.set(VERCEL_CACHE_KEY, payload, { ttl: ttlSeconds });
-}
-
-/** Test hook: inject a fake Vercel cache implementation. */
-export function __testSetVercelRuntimeCache(
-  impl: RuntimeCacheLike | null,
-): void {
-  vercelCachePromise = Promise.resolve(impl);
 }

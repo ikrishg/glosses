@@ -7,13 +7,17 @@ import type {
 import { hasGraphEdge, neighbors } from "@/lib/graph/lookup";
 import { recommendNextThing } from "@/lib/engine/recommend";
 import { blendProfiles, blendedAsProfile } from "@/lib/engine/blend";
+import {
+  isOutingActivity,
+  isRestaurantFood,
+} from "@/lib/qloo/entity-filters";
 
 function bestLinkedFood(
   place: QlooEntity,
   graph: QlooGraphSnapshot,
 ): QlooEntity | null {
-  const foodNeighbor = neighbors(graph, place.id).find(
-    (n) => n.entity.domain === "food",
+  const foodNeighbor = neighbors(graph, place.id).find((n) =>
+    isRestaurantFood(n.entity),
   );
   return foodNeighbor?.entity ?? null;
 }
@@ -25,8 +29,7 @@ function bestLinkedActivityFromFood(
 ): QlooEntity | undefined {
   const candidate = neighbors(graph, food.id).find(
     (n) =>
-      (n.entity.domain === "film" || n.entity.domain === "music") &&
-      !exclude.has(n.entity.id),
+      isOutingActivity(n.entity) && !exclude.has(n.entity.id),
   );
   if (!candidate) {
     return undefined;

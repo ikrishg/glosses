@@ -13,7 +13,6 @@ import {
 import {
   clearLiveGraphCache,
   getServingLiveGraph,
-  hydrateLiveGraphState,
 } from "@/lib/qloo/live-graph";
 import { scheduleLiveGraphWarm } from "@/lib/qloo/schedule-warm";
 import { qlooFetch, type QlooFetchOptions } from "@/lib/qloo/qloo-fetch";
@@ -97,7 +96,6 @@ export class LiveQlooClient implements QlooClient {
   }
 
   async getGraph(): Promise<QlooGraphSnapshot> {
-    await hydrateLiveGraphState();
     scheduleLiveGraphWarm(this.fetchOpts);
     return getServingLiveGraph();
   }
