@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
-import { clearSharedLiveGraphState } from "@/lib/qloo/live-graph-store";
 import {
   buildLiveGraphSnapshot,
   clearLiveGraphCache,
@@ -142,9 +141,8 @@ function ALL_DOMAIN_SEEDS() {
 }
 
 describe("buildLiveGraphSnapshot", () => {
-  afterEach(async () => {
+  afterEach(() => {
     clearLiveGraphCache();
-    await clearSharedLiveGraphState();
     vi.unstubAllGlobals();
   });
 
@@ -299,9 +297,8 @@ describe("buildLiveGraphSnapshot", () => {
 });
 
 describe("background warm / serve stale", () => {
-  afterEach(async () => {
+  afterEach(() => {
     clearLiveGraphCache();
-    await clearSharedLiveGraphState();
     vi.unstubAllGlobals();
   });
 

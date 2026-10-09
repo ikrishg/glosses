@@ -11,7 +11,7 @@ import {
   type QuizPrompt,
 } from "@/lib/demo/quiz-catalog";
 import { TasteProfileRadar } from "@/components/TasteProfileRadar";
-import type { QlooDataMode } from "@/lib/qloo/app-graph";
+import type { QlooDataMode } from "@/lib/qloo/data-mode";
 import { fetchQlooTool, useQlooTool } from "@/lib/qloo/use-qloo-tool";
 import type {
   QlooDomain,

@@ -7,14 +7,10 @@ import {
   shouldUseLiveQloo,
   type QlooClient,
 } from "@/lib/qloo/client";
-import {
-  getLiveGraphStatus,
-  hydrateLiveGraphState,
-} from "@/lib/qloo/live-graph";
+import { getLiveGraphStatus } from "@/lib/qloo/live-graph";
+import type { GraphDataSource, QlooDataMode } from "@/lib/qloo/data-mode";
 
-export type QlooDataMode = "mock" | "live" | "live-warming" | "live-fallback";
-
-export type GraphDataSource = "fixture" | "live";
+export type { GraphDataSource, QlooDataMode };
 
 export function getQlooDataMode(): QlooDataMode {
   if (!shouldUseLiveQloo()) {
@@ -38,9 +34,6 @@ export async function loadAppGraph(client?: QlooClient): Promise<{
   degraded: boolean;
 }> {
   const hasKey = shouldUseLiveQloo();
-  if (hasKey) {
-    await hydrateLiveGraphState();
-  }
   const qloo = client ?? createQlooClient();
   const graph = await qloo.getGraph();
   const source = graphDataSource(graph);

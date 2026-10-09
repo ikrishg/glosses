@@ -10,11 +10,9 @@ import {
   qlooInsightsFilterType,
 } from "@/lib/qloo/domain-types";
 import { QLOO_FOOD_INSIGHTS_TAG } from "@/lib/qloo/food-tags";
+import { isRestaurantFood } from "@/lib/qloo/entity-filters";
 import {
-  clearSharedLiveGraphState,
   getMemoryLiveGraphStore,
-  loadSharedLiveGraphState,
-  persistSharedLiveGraphState,
   resetMemoryLiveGraphStore,
   type LiveGraphBuildProgress,
   type LiveGraphStatus,
@@ -124,10 +122,6 @@ function cloneProgress(src: LiveGraphBuildProgress): LiveGraphBuildProgress {
   };
 }
 
-async function touchPersistedState(): Promise<void> {
-  await persistSharedLiveGraphState();
-}
-
 export function progressFingerprint(
   progress: LiveGraphBuildProgress,
 ): string {
@@ -137,10 +131,6 @@ export function progressFingerprint(
     searched: progress.searchedFixtures.size,
     insights: [...progress.insightsJobsDone].sort(),
   });
-}
-
-export async function hydrateLiveGraphState(): Promise<void> {
-  await loadSharedLiveGraphState();
 }
 
 export function isSeedEntity(entity: QlooEntity): boolean {
@@ -173,7 +163,6 @@ export function meetsLiveGraphCoverage(state: {
 
 export function clearLiveGraphCache(): void {
   resetMemoryLiveGraphStore();
-  void clearSharedLiveGraphState();
 }
 
 /** Test helper: mark a graph as the ready cached snapshot. */
@@ -215,7 +204,6 @@ export function isLiveGraphReady(): boolean {
 
 /** Graph served on the request path — never blocks on a background build. */
 export function getServingLiveGraph(): QlooGraphSnapshot {
-  void loadSharedLiveGraphState();
   const store = mem();
   if (store.readyCache) {
     return store.readyCache.graph;
@@ -338,11 +326,15 @@ function ensureInsightEntity(
     }
     return existing;
   }
+  const tags = [INSIGHT_ENTITY_TAG];
+  if (entityDomain === "food") {
+    tags.push(QLOO_FOOD_INSIGHTS_TAG);
+  }
   const entity: QlooEntity = {
     id: hit.entity_id,
     name: hit.name?.trim() || "Qloo pick",
     domain: entityDomain,
-    tags: [INSIGHT_ENTITY_TAG],
+    tags,
   };
   state.entities.push(entity);
   liveIdToEntity.set(hit.entity_id, entity);
@@ -365,7 +357,8 @@ function linkPlaceFoodInsightPairs(
     (e) => e.domain === "places" && e.tags.includes(INSIGHT_ENTITY_TAG),
   );
   const foods = state.entities.filter(
-    (e) => e.domain === "food" && e.tags.includes(INSIGHT_ENTITY_TAG),
+    (e) =>
+      e.tags.includes(INSIGHT_ENTITY_TAG) && isRestaurantFood(e),
   );
   if (places.length === 0 || foods.length === 0) {
     return;
@@ -457,7 +450,6 @@ export async function buildLiveGraphSnapshot(
   }
 
   mem().partial = cloneProgress(state);
-  void touchPersistedState();
 
   if (state.entities.length < MIN_RESOLVED_ENTITIES) {
     throw new Error(
@@ -517,7 +509,6 @@ export async function buildLiveGraphSnapshot(
   linkPlaceFoodInsightPairs(state, edgeKeys);
 
   mem().partial = cloneProgress(state);
-  void touchPersistedState();
 
   if (!meetsLiveGraphCoverage(state)) {
     throw new Error(
@@ -542,7 +533,6 @@ function scheduleRetry(fetchOpts: QlooFetchOptions): void {
   } else if (store.partial !== null && store.lastStatus !== "degraded") {
     store.lastStatus = "warming";
   }
-  void touchPersistedState();
   setTimeout(() => {
     warmLiveGraphCache(fetchOpts);
   }, RETRY_COOLDOWN_MS);
@@ -563,7 +553,6 @@ function runBackgroundBuild(fetchOpts: QlooFetchOptions): Promise<void> {
       s.partial = null;
       s.retryAfter = 0;
       s.lastStatus = "ready";
-      void touchPersistedState();
     })
     .catch((err) => {
       console.warn(
@@ -581,7 +570,6 @@ function runBackgroundBuild(fetchOpts: QlooFetchOptions): Promise<void> {
       } else {
         s.lastStatus = "warming";
       }
-      void touchPersistedState();
       scheduleRetry(fetchOpts);
     })
     .finally(() => {
@@ -620,22 +608,17 @@ function startWarmIfNeeded(fetchOpts: QlooFetchOptions): void {
 /** Starts a background graph build; requests never await this. */
 export function warmLiveGraphCache(fetchOpts: QlooFetchOptions): void {
   startWarmIfNeeded(fetchOpts);
-  void loadSharedLiveGraphState().then(() => {
-    startWarmIfNeeded(fetchOpts);
-  });
 }
 
 /** Await the in-flight background build (for `after()` / warm routes). */
 export async function awaitLiveGraphBuild(
   fetchOpts: QlooFetchOptions,
 ): Promise<LiveGraphStatus> {
-  await loadSharedLiveGraphState();
   warmLiveGraphCache(fetchOpts);
   const store = mem();
   if (store.inflight) {
     await store.inflight;
   }
-  await loadSharedLiveGraphState();
   return getLiveGraphStatus();
 }
 
