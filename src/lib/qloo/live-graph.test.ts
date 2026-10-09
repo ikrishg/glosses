@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIXTURE_GRAPH } from "@/lib/graph/fixture-graph";
+import { clearSharedLiveGraphState } from "@/lib/qloo/live-graph-store";
 import {
   buildLiveGraphSnapshot,
   clearLiveGraphCache,
@@ -141,8 +142,9 @@ function ALL_DOMAIN_SEEDS() {
 }
 
 describe("buildLiveGraphSnapshot", () => {
-  afterEach(() => {
+  afterEach(async () => {
     clearLiveGraphCache();
+    await clearSharedLiveGraphState();
     vi.unstubAllGlobals();
   });
 
@@ -226,9 +228,34 @@ describe("buildLiveGraphSnapshot", () => {
           new URL(String(c[0])).searchParams.get("filter.type") ?? "",
       ),
     );
-    expect(filterTypes.size).toBe(5);
     expect(filterTypes.has("urn:entity:place")).toBe(true);
     expect(filterTypes.has("urn:entity:movie")).toBe(true);
+    const foodTagged = fetchSpy.mock.calls.filter((c) =>
+      String(c[0]).includes("filter.tags="),
+    );
+    expect(foodTagged.length).toBeGreaterThan(0);
+  });
+
+  it("labels restaurant insight hits as food for outing pairing", async () => {
+    const fetchSpy = makeSuccessfulFetchStub();
+    const graph = await buildLiveGraphSnapshot({
+      apiKey: SECRET,
+      fetchImpl: fetchSpy,
+    });
+    const foodInsights = graph.entities.filter(
+      (e) => e.domain === "food" && e.tags.includes("qloo-insight"),
+    );
+    expect(foodInsights.length).toBeGreaterThan(0);
+    const placeInsights = graph.entities.filter(
+      (e) => e.domain === "places" && e.tags.includes("qloo-insight"),
+    );
+    expect(placeInsights.length).toBeGreaterThan(0);
+    const hasPlaceFoodRoute = graph.edges.some(
+      (e) =>
+        placeInsights.some((p) => p.id === e.fromId) &&
+        foodInsights.some((f) => f.id === e.toId),
+    );
+    expect(hasPlaceFoodRoute).toBe(true);
   });
 
   it("skips a timed-out insights batch without aborting the build", async () => {
@@ -272,8 +299,9 @@ describe("buildLiveGraphSnapshot", () => {
 });
 
 describe("background warm / serve stale", () => {
-  afterEach(() => {
+  afterEach(async () => {
     clearLiveGraphCache();
+    await clearSharedLiveGraphState();
     vi.unstubAllGlobals();
   });
 
@@ -313,7 +341,7 @@ describe("background warm / serve stale", () => {
       entities: seeds,
       edges: [],
       searchedFixtures: new Set(FIXTURE_GRAPH.entities.map((e) => e.id)),
-      insightsFilterTypesDone: new Set<string>(),
+      insightsJobsDone: new Set<string>(),
     };
     __testSetPartial(progress);
 

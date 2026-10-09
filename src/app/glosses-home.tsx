@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import { connection } from "next/server";
 import { GlossesDemo } from "@/components/GlossesDemo";
 import { buildTasteQuiz } from "@/lib/demo/quiz-catalog";
@@ -7,6 +8,7 @@ import { scheduleLiveGraphWarmFromEnv } from "@/lib/qloo/schedule-warm";
 
 export async function GlossesHome() {
   await connection();
+  await headers();
   scheduleLiveGraphWarmFromEnv();
   const { mode, graph } = await loadAppGraph();
   const quiz = buildTasteQuiz(graph);
