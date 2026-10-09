@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { GlossesDemo } from "@/components/GlossesDemo";
-import { buildTasteQuiz } from "@/lib/demo/quiz-catalog";
 import { buildSeedPeople } from "@/lib/demo/seed";
 import type { QlooDataMode } from "@/lib/qloo/data-mode";
 import type { QlooGraphSnapshot } from "@/lib/qloo/types";
@@ -54,7 +53,6 @@ export function GlossesApp() {
     );
   }
 
-  const quiz = buildTasteQuiz(payload.graph);
   const seedPeople = buildSeedPeople(payload.graph);
 
   return (
@@ -62,7 +60,6 @@ export function GlossesApp() {
       <GlossesDemo
         mode={payload.mode}
         graph={payload.graph}
-        quiz={quiz}
         seedPeople={seedPeople}
       />
     </div>

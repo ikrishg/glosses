@@ -23,7 +23,10 @@ export type { LiveGraphBuildProgress, LiveGraphStatus };
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const RETRY_COOLDOWN_MS = 60 * 1000;
-const BUILD_BUDGET_MS = 60_000;
+/** Per-build work cap (insights + search); keep under serverless `maxDuration`. */
+export const BUILD_BUDGET_MS = 48_000;
+/** Max time API routes wait on an in-flight warm before returning fixture fallback. */
+export const API_WARM_MAX_WAIT_MS = 50_000;
 export const POOL_CONCURRENCY = 3;
 export const MIN_LIVE_EDGE_COUNT = 20;
 export const INSIGHTS_SIGNAL_BATCH_SIZE = 6;
@@ -309,6 +312,21 @@ function mergeEdges(
   edges.push({ fromId, toId, weight });
 }
 
+export function applyFoodInsightMerge(
+  existing: QlooEntity,
+  entityDomain: QlooDomain,
+): void {
+  if (entityDomain !== "food" || !existing.tags.includes(INSIGHT_ENTITY_TAG)) {
+    return;
+  }
+  if (existing.domain !== "food") {
+    existing.domain = "food";
+  }
+  if (!existing.tags.includes(QLOO_FOOD_INSIGHTS_TAG)) {
+    existing.tags.push(QLOO_FOOD_INSIGHTS_TAG);
+  }
+}
+
 function ensureInsightEntity(
   hit: InsightsHit,
   entityDomain: QlooDomain,
@@ -317,13 +335,7 @@ function ensureInsightEntity(
 ): QlooEntity {
   const existing = liveIdToEntity.get(hit.entity_id);
   if (existing) {
-    if (
-      entityDomain === "food" &&
-      existing.tags.includes(INSIGHT_ENTITY_TAG) &&
-      existing.domain !== "food"
-    ) {
-      existing.domain = "food";
-    }
+    applyFoodInsightMerge(existing, entityDomain);
     return existing;
   }
   const tags = [INSIGHT_ENTITY_TAG];
@@ -348,8 +360,23 @@ function seedExcludedFromInsightFilter(
   return qlooInsightsFilterType(seedDomain) === filterType;
 }
 
+function indexIncomingSeedIds(
+  edges: QlooAffinityEdge[],
+): Map<string, Set<string>> {
+  const byTarget = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    let seeds = byTarget.get(edge.toId);
+    if (!seeds) {
+      seeds = new Set();
+      byTarget.set(edge.toId, seeds);
+    }
+    seeds.add(edge.fromId);
+  }
+  return byTarget;
+}
+
 /** Place ↔ food edges for outing routes (shared signalling seeds). */
-function linkPlaceFoodInsightPairs(
+export function linkPlaceFoodInsightPairs(
   state: LiveGraphBuildProgress,
   edgeKeys: Set<string>,
 ): void {
@@ -363,16 +390,13 @@ function linkPlaceFoodInsightPairs(
   if (places.length === 0 || foods.length === 0) {
     return;
   }
-  const seedsForTarget = (targetId: string): Set<string> => {
-    return new Set(
-      state.edges.filter((e) => e.toId === targetId).map((e) => e.fromId),
-    );
-  };
+  const seedsByTarget = indexIncomingSeedIds(state.edges);
   for (const place of places) {
-    const placeSeeds = seedsForTarget(place.id);
-    if (placeSeeds.size === 0) continue;
+    const placeSeeds = seedsByTarget.get(place.id);
+    if (!placeSeeds || placeSeeds.size === 0) continue;
     for (const food of foods) {
-      const foodSeeds = seedsForTarget(food.id);
+      const foodSeeds = seedsByTarget.get(food.id);
+      if (!foodSeeds) continue;
       const shared = [...placeSeeds].some((s) => foodSeeds.has(s));
       if (!shared) continue;
       mergeEdges(state.edges, edgeKeys, place.id, food.id, 0.78);
@@ -411,8 +435,9 @@ function ingestInsightHits(
 export async function buildLiveGraphSnapshot(
   fetchOpts: QlooFetchOptions,
   initialProgress?: LiveGraphBuildProgress,
+  buildBudgetMs: number = BUILD_BUDGET_MS,
 ): Promise<QlooGraphSnapshot> {
-  const deadline = Date.now() + BUILD_BUDGET_MS;
+  const deadline = Date.now() + buildBudgetMs;
   const state = initialProgress
     ? cloneProgress(initialProgress)
     : emptyProgress();
@@ -434,9 +459,14 @@ export async function buildLiveGraphSnapshot(
 
   for (let i = 0; i < fixturesToSearch.length; i++) {
     const fixture = fixturesToSearch[i];
-    state.searchedFixtures.add(fixture.id);
     const liveId = liveIds[i];
-    if (!liveId) continue;
+    if (liveId === undefined) {
+      continue;
+    }
+    if (!liveId) {
+      continue;
+    }
+    state.searchedFixtures.add(fixture.id);
     state.fixtureIdMap[fixture.id] = liveId;
     if (liveIdToEntity.has(liveId)) continue;
     const entity: QlooEntity = {
@@ -538,7 +568,16 @@ function scheduleRetry(fetchOpts: QlooFetchOptions): void {
   }, RETRY_COOLDOWN_MS);
 }
 
-function runBackgroundBuild(fetchOpts: QlooFetchOptions): Promise<void> {
+type WarmOptions = {
+  buildBudgetMs?: number;
+};
+
+let activeBuildBudgetMs = BUILD_BUDGET_MS;
+
+function runBackgroundBuild(
+  fetchOpts: QlooFetchOptions,
+  buildBudgetMs: number,
+): Promise<void> {
   const store = mem();
   const stale = store.readyCache;
   const progressAtStart = store.partial
@@ -546,7 +585,11 @@ function runBackgroundBuild(fetchOpts: QlooFetchOptions): Promise<void> {
     : null;
   store.lastStatus = stale ? "ready" : "warming";
 
-  return buildLiveGraphSnapshot(fetchOpts, store.partial ?? undefined)
+  return buildLiveGraphSnapshot(
+    fetchOpts,
+    store.partial ?? undefined,
+    buildBudgetMs,
+  )
     .then((graph) => {
       const s = mem();
       s.readyCache = { graph, expiresAt: Date.now() + CACHE_TTL_MS };
@@ -587,7 +630,10 @@ function runBackgroundBuild(fetchOpts: QlooFetchOptions): Promise<void> {
     });
 }
 
-function startWarmIfNeeded(fetchOpts: QlooFetchOptions): void {
+function startWarmIfNeeded(
+  fetchOpts: QlooFetchOptions,
+  options?: WarmOptions,
+): void {
   const store = mem();
   const now = Date.now();
   if (store.readyCache && store.readyCache.expiresAt > now) {
@@ -602,22 +648,36 @@ function startWarmIfNeeded(fetchOpts: QlooFetchOptions): void {
   if (!store.readyCache) {
     store.lastStatus = "warming";
   }
-  store.inflight = runBackgroundBuild(fetchOpts);
+  const buildBudgetMs = options?.buildBudgetMs ?? activeBuildBudgetMs;
+  store.inflight = runBackgroundBuild(fetchOpts, buildBudgetMs);
 }
 
 /** Starts a background graph build; requests never await this. */
-export function warmLiveGraphCache(fetchOpts: QlooFetchOptions): void {
-  startWarmIfNeeded(fetchOpts);
+export function warmLiveGraphCache(
+  fetchOpts: QlooFetchOptions,
+  options?: WarmOptions,
+): void {
+  if (options?.buildBudgetMs !== undefined) {
+    activeBuildBudgetMs = options.buildBudgetMs;
+  }
+  startWarmIfNeeded(fetchOpts, options);
 }
 
 /** Await the in-flight background build (for `after()` / warm routes). */
 export async function awaitLiveGraphBuild(
   fetchOpts: QlooFetchOptions,
+  options?: { maxWaitMs?: number; buildBudgetMs?: number },
 ): Promise<LiveGraphStatus> {
-  warmLiveGraphCache(fetchOpts);
+  const maxWaitMs = options?.maxWaitMs ?? API_WARM_MAX_WAIT_MS;
+  const buildBudgetMs = options?.buildBudgetMs ?? BUILD_BUDGET_MS;
+  warmLiveGraphCache(fetchOpts, { buildBudgetMs });
+  const waitUntil = Date.now() + maxWaitMs;
   const store = mem();
-  if (store.inflight) {
-    await store.inflight;
+  while (store.inflight && Date.now() < waitUntil) {
+    await Promise.race([
+      store.inflight,
+      new Promise<void>((resolve) => setTimeout(resolve, 200)),
+    ]);
   }
   return getLiveGraphStatus();
 }

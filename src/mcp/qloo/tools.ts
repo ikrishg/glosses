@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { QlooClient } from "@/lib/qloo/client";
+import type { QlooClient } from "@/lib/qloo/create-qloo-client";
 import type { UserTasteProfile } from "@/lib/qloo/types";
 import { recommendNextThing } from "@/lib/engine/recommend";
 import { rankPeopleByTaste, type RankablePerson } from "@/lib/engine/match";
@@ -166,8 +166,8 @@ function responseMeta(
   canonicalInput: unknown,
 ) {
   const source =
-    tool === "search_entities" && client.searchDataSource === "live"
-      ? "live"
+    tool === "search_entities"
+      ? client.searchDataSource
       : (graph.dataSource ?? "fixture");
   if (source === "live") {
     return { source: "live" as const, fixtureId: null, graphVersion: graph.version };

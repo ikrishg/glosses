@@ -33,6 +33,25 @@ afterEach(() => {
 });
 
 describe("search_entities", () => {
+  it("reports fixture source when search fell back even if graph is live", async () => {
+    const client = {
+      mode: "live" as const,
+      degraded: true,
+      searchDataSource: "fixture" as const,
+      getGraph: async () => ({
+        ...FIXTURE_GRAPH,
+        version: "qloo-live-test",
+        dataSource: "live" as const,
+      }),
+      searchEntities: async () => FIXTURE_GRAPH.entities.filter((e) => e.domain === "music"),
+      logTaste: async () => undefined,
+      getProfile: async () => null,
+    };
+    const r = await searchEntities(client, { domain: "music", query: "" });
+    expect(r.source).toBe("fixture");
+    expect(r.fixtureId).toMatch(/search_entities/);
+  });
+
   it("labels live Qloo search results as source live", async () => {
     const client = {
       mode: "live" as const,

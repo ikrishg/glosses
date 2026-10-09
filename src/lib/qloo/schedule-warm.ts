@@ -21,8 +21,8 @@ function liveQlooEnabled(
 export function scheduleLiveGraphWarm(fetchOpts: QlooFetchOptions): void {
   warmLiveGraphCache(fetchOpts);
   try {
-    after(() => {
-      void awaitLiveGraphBuild(fetchOpts);
+    after(async () => {
+      await awaitLiveGraphBuild(fetchOpts);
     });
   } catch {
     // Not in a request context (tests, MCP stdio) — in-process warm only.
