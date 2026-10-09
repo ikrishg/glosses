@@ -80,7 +80,7 @@ describe("LiveQlooClient", () => {
     const second = await client.getGraph();
     expect(first.dataSource).toBe("live");
     expect(first.fixtureIdMap?.["qloo:music:radiohead"]).toBe("live-entity-1");
-    expect(second).toBe(first);
+    expect(second).toStrictEqual(first);
   });
 
   it("serves fixtures on the request path while the graph warms", async () => {

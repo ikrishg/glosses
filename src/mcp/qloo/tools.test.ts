@@ -85,6 +85,55 @@ describe("search_entities", () => {
 });
 
 describe("recommend", () => {
+  it("maps fixture taste ids when serving a live graph", async () => {
+    const liveGraph = {
+      ...FIXTURE_GRAPH,
+      dataSource: "live" as const,
+      version: "qloo-live-test",
+      fixtureIdMap: {
+        "qloo:music:radiohead": "live-radiohead",
+        "qloo:film:her": "live-her",
+      },
+      entities: FIXTURE_GRAPH.entities.map((e) => {
+        const mapped =
+          e.id === "qloo:music:radiohead"
+            ? "live-radiohead"
+            : e.id === "qloo:film:her"
+              ? "live-her"
+              : e.id;
+        return mapped === e.id ? e : { ...e, id: mapped };
+      }),
+      edges: FIXTURE_GRAPH.edges.map((edge) => ({
+        ...edge,
+        fromId:
+          edge.fromId === "qloo:music:radiohead"
+            ? "live-radiohead"
+            : edge.fromId === "qloo:film:her"
+              ? "live-her"
+              : edge.fromId,
+        toId:
+          edge.toId === "qloo:music:radiohead"
+            ? "live-radiohead"
+            : edge.toId === "qloo:film:her"
+              ? "live-her"
+              : edge.toId,
+      })),
+    };
+    const client = {
+      mode: "live" as const,
+      degraded: false,
+      searchDataSource: "fixture" as const,
+      getGraph: async () => liveGraph,
+      searchEntities: async () => [],
+      logTaste: async () => undefined,
+      getProfile: async () => null,
+    };
+    const profile = loggedProfile(["qloo:music:radiohead", "qloo:film:her"]);
+    const r = await recommend(client, { profile, limit: 4 });
+    expect(r.source).toBe("live");
+    expect(r.recommendations.length).toBeGreaterThan(0);
+  });
+
   it("delegates to the existing engine on the client graph", async () => {
     const profile = loggedProfile(["qloo:music:radiohead", "qloo:film:her"]);
     const r = await recommend(mock, { profile, limit: 4 });

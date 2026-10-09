@@ -6,6 +6,7 @@ import { rankPeopleByTaste, type RankablePerson } from "@/lib/engine/match";
 import { blendProfiles, blendedAsProfile } from "@/lib/engine/blend";
 import { suggestSharedOuting } from "@/lib/engine/outing";
 import { pickFriends } from "@/lib/engine/friend-picks";
+import { normalizeProfileForLiveGraph } from "@/lib/qloo/resolve-entity-id";
 
 export const QLOO_TOOL_NAMES = [
   "search_entities",
@@ -235,7 +236,7 @@ export async function recommend(
       args.limit,
     ]),
     recommendations: recommendNextThing(
-      toProfile(args.profile),
+      normalizeProfileForLiveGraph(toProfile(args.profile), graph),
       graph,
       args.limit,
     ),
@@ -248,8 +249,19 @@ export async function compareTaste(
 ): Promise<CompareTasteResult> {
   const args = z.object(compareTasteInput).parse(rawArgs);
   const graph = await client.getGraph();
-  const viewer = toProfile(args.viewer);
-  const people = args.people.map(toRankable);
+  const viewer = normalizeProfileForLiveGraph(
+    toProfile(args.viewer),
+    graph,
+  );
+  const people = args.people.map((p) =>
+    toRankable({
+      ...p,
+      tastes: p.tastes.map((t) => ({
+        ...t,
+        entityId: graph.fixtureIdMap?.[t.entityId] ?? t.entityId,
+      })),
+    }),
+  );
 
   const partner = args.blendWithPersonId
     ? people.find((p) => p.personId === args.blendWithPersonId)
@@ -260,8 +272,9 @@ export async function compareTaste(
     );
   }
 
+  const partnerProfile = normalizeProfileForLiveGraph(partner.profile, graph);
   const blendProfile = blendedAsProfile(
-    blendProfiles([viewer, partner.profile]),
+    blendProfiles([viewer, partnerProfile]),
     `${viewer.displayName} + ${partner.displayName}`,
   );
 
@@ -276,8 +289,12 @@ export async function compareTaste(
     picks: pickFriends(viewer, people, graph),
     blend: {
       withPersonId: partner.personId,
-      recommendations: recommendNextThing(blendProfile, graph, args.blendLimit),
-      outing: suggestSharedOuting(viewer, partner.profile, graph),
+      recommendations: recommendNextThing(
+        normalizeProfileForLiveGraph(blendProfile, graph),
+        graph,
+        args.blendLimit,
+      ),
+      outing: suggestSharedOuting(viewer, partnerProfile, graph),
     },
   };
 }

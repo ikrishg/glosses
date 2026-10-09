@@ -7,7 +7,10 @@ import {
   shouldUseLiveQloo,
   type QlooClient,
 } from "@/lib/qloo/client";
-import { getLiveGraphStatus } from "@/lib/qloo/live-graph";
+import {
+  getLiveGraphStatus,
+  hydrateLiveGraphState,
+} from "@/lib/qloo/live-graph";
 
 export type QlooDataMode = "mock" | "live" | "live-warming" | "live-fallback";
 
@@ -35,6 +38,9 @@ export async function loadAppGraph(client?: QlooClient): Promise<{
   degraded: boolean;
 }> {
   const hasKey = shouldUseLiveQloo();
+  if (hasKey) {
+    await hydrateLiveGraphState();
+  }
   const qloo = client ?? createQlooClient();
   const graph = await qloo.getGraph();
   const source = graphDataSource(graph);
